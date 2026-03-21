@@ -1,0 +1,11 @@
+-dontwarn io.flutter.embedding.**
+-dontwarn javax.annotation.**
+-dontwarn javax.lang.model.**
+-dontwarn com.google.auto.value.**
+-dontwarn com.google.protobuf.**
+-dontwarn com.google.mediapipe.**
+
+-keep class io.github.iot_gamer.hand_landmarker.** { *; }
+-keep class com.github.dart_lang.jni.** { *; }
+-keep class com.google.mediapipe.** { *; }
+-keep class com.google.protobuf.** { *; }

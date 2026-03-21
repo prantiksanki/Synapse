@@ -213,7 +213,8 @@ class _DetectionScreenState extends State<DetectionScreen>
               fps: provider.fps,
               wordBufferState: provider.wordBufferState,
               generationResult: provider.generationResult,
-              modelDownloadState: provider.modelDownloadState,
+              grammarStatus: provider.grammarStatus,
+              grammarLoadError: provider.grammarLoadError,
               hasHandDetected: provider.currentLandmarks != null,
               isGeneratingSentence: provider.isGeneratingSentence,
               onSpeak: provider.generationResult.hasSentence

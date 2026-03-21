@@ -5,18 +5,19 @@ import '../models/classification_result.dart';
 import '../models/gesture_result.dart';
 import '../models/hand_landmark.dart';
 import '../models/llm_generation_result.dart';
-import '../models/model_download_state.dart';
 import '../models/word_buffer_state.dart';
 import '../services/camera_service.dart';
 import '../services/hand_landmark_service.dart';
 import '../services/landmark_processor.dart';
-import '../services/llm_service.dart';
-import '../services/model_downloader.dart';
 import '../services/sign_classifier.dart';
+import '../services/t5_grammar_service.dart';
 import '../services/tts_service.dart';
 import '../services/word_buffer.dart';
 
 enum DetectionState { uninitialized, initializing, ready, detecting, error }
+
+/// Status of the T5 grammar model loading.
+enum GrammarModelStatus { loading, ready, error }
 
 class DetectionProvider extends ChangeNotifier {
   static const String unsupportedPlatformMessage =
@@ -27,8 +28,7 @@ class DetectionProvider extends ChangeNotifier {
   final HandLandmarkService _handLandmarkService = HandLandmarkService();
   final SignClassifier _signClassifier = SignClassifier();
   final WordBufferService _wordBufferService = WordBufferService();
-  final ModelDownloader _modelDownloader = ModelDownloader();
-  final LlmService _llmService = LlmService();
+  final T5GrammarService _grammarService = T5GrammarService();
   final TtsService _ttsService = TtsService();
 
   DetectionState _state = DetectionState.uninitialized;
@@ -36,7 +36,10 @@ class DetectionProvider extends ChangeNotifier {
   ClassificationResult? _currentResult;
   GestureResult? _currentGesture;
   String? _errorMessage;
-  ModelDownloadState _modelDownloadState = const ModelDownloadState.idle();
+
+  GrammarModelStatus _grammarStatus = GrammarModelStatus.loading;
+  String? _grammarLoadError;
+
   LlmGenerationResult _generationResult = const LlmGenerationResult.idle();
   int _generationRequestId = 0;
   bool _isGeneratingSentence = false;
@@ -60,10 +63,12 @@ class DetectionProvider extends ChangeNotifier {
   bool get isPlatformSupported =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
   WordBufferState get wordBufferState => _wordBufferService.state;
-  ModelDownloadState get modelDownloadState => _modelDownloadState;
   LlmGenerationResult get generationResult => _generationResult;
   bool get isGeneratingSentence => _isGeneratingSentence;
-  bool get isLlmReady => _modelDownloadState.isLoaded;
+
+  GrammarModelStatus get grammarStatus => _grammarStatus;
+  String? get grammarLoadError => _grammarLoadError;
+  bool get isGrammarReady => _grammarStatus == GrammarModelStatus.ready;
 
   Future<void> initialize() async {
     if (_state == DetectionState.initializing) return;
@@ -77,20 +82,19 @@ class DetectionProvider extends ChangeNotifier {
         throw UnsupportedError(unsupportedPlatformMessage);
       }
 
-      // Initialize camera first to get sensor orientation
       await _cameraService.initialize();
 
-      // Initialize hand landmarker with sensor orientation
       _handLandmarkService.initialize(
         sensorOrientation: _cameraService.sensorOrientation,
       );
 
-      // Initialize classifier
       await _signClassifier.initialize();
 
       _state = DetectionState.ready;
       notifyListeners();
-      unawaited(_prepareLlm());
+
+      // Load T5 grammar model in background — UI still works via Dart fallback
+      unawaited(_loadGrammarModel());
     } catch (e) {
       _state = DetectionState.error;
       _errorMessage = e is UnsupportedError
@@ -98,6 +102,22 @@ class DetectionProvider extends ChangeNotifier {
           : e.toString();
       notifyListeners();
     }
+  }
+
+  Future<void> _loadGrammarModel() async {
+    _grammarStatus = GrammarModelStatus.loading;
+    notifyListeners();
+
+    await _grammarService.load();
+
+    if (_grammarService.isReady) {
+      _grammarStatus = GrammarModelStatus.ready;
+      _grammarLoadError = null;
+    } else {
+      _grammarStatus = GrammarModelStatus.error;
+      _grammarLoadError = _grammarService.loadError;
+    }
+    notifyListeners();
   }
 
   Future<void> startDetection() async {
@@ -134,10 +154,8 @@ class DetectionProvider extends ChangeNotifier {
   }
 
   void _onCameraImage(CameraImage image) {
-    // Process the camera image (synchronous)
     final landmarks = _handLandmarkService.processImage(image);
 
-    // Update FPS counter
     _frameCount++;
     final now = DateTime.now();
     final elapsed = now.difference(_lastFpsUpdate).inMilliseconds;
@@ -159,10 +177,8 @@ class DetectionProvider extends ChangeNotifier {
       return;
     }
 
-    // Update landmarks
     _currentLandmarks = HandLandmarks.fromList(landmarks);
 
-    // Preprocess and classify
     try {
       final preprocessed = LandmarkProcessor.preProcessNormalizedLandmarks(
         landmarks,
@@ -209,86 +225,6 @@ class DetectionProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> _prepareLlm() async {
-    try {
-      _modelDownloadState = const ModelDownloadState(
-        status: ModelDownloadStatus.checking,
-      );
-      notifyListeners();
-
-      // Check that the native llama_bridge.so was compiled into the APK.
-      final nativeReady = await _llmService.isNativeLibLoaded();
-      if (!nativeReady) {
-        _modelDownloadState = const ModelDownloadState(
-          status: ModelDownloadStatus.error,
-          error:
-              'Native llama_bridge library not found in APK. '
-              'Rebuild the app with NDK enabled so libllama_bridge.so is included.',
-        );
-        notifyListeners();
-        return;
-      }
-
-      if (await _llmService.isModelLoaded()) {
-        _modelDownloadState = ModelDownloadState(
-          status: ModelDownloadStatus.loaded,
-          localPath: await _modelDownloader.resolveModelPath(),
-        );
-        notifyListeners();
-        return;
-      }
-
-      final modelExists = await _modelDownloader.modelExists();
-      if (!modelExists) {
-        _modelDownloadState = const ModelDownloadState(
-          status: ModelDownloadStatus.missing,
-        );
-        notifyListeners();
-
-        final file = await _modelDownloader.downloadModel(
-          onProgress: (received, total) {
-            _modelDownloadState = ModelDownloadState(
-              status: ModelDownloadStatus.downloading,
-              bytesDownloaded: received,
-              totalBytes: total,
-              progress: total > 0 ? received / total : 0,
-            );
-            notifyListeners();
-          },
-        );
-
-        _modelDownloadState = ModelDownloadState(
-          status: ModelDownloadStatus.ready,
-          localPath: file.path,
-        );
-        notifyListeners();
-      }
-
-      final modelPath = await _modelDownloader.resolveModelPath();
-      _modelDownloadState = ModelDownloadState(
-        status: ModelDownloadStatus.loading,
-        localPath: modelPath,
-      );
-      notifyListeners();
-
-      final loaded = await _llmService.loadModel(modelPath);
-      _modelDownloadState = ModelDownloadState(
-        status: loaded ? ModelDownloadStatus.loaded : ModelDownloadStatus.error,
-        localPath: modelPath,
-        error: loaded ? null : 'Unable to load the local language model.',
-      );
-      notifyListeners();
-    } catch (e) {
-      _modelDownloadState = ModelDownloadState(
-        status: ModelDownloadStatus.error,
-        error: e.toString(),
-      );
-      notifyListeners();
-    }
-  }
-
-  /// Force-commit the current buffer and generate a sentence immediately.
-  /// Useful as a manual "send" button on the UI.
   Future<void> forceGenerate() async {
     final phrase = _wordBufferService.forceCommit();
     if (phrase != null && phrase.trim().isNotEmpty) {
@@ -303,23 +239,7 @@ class DetectionProvider extends ChangeNotifier {
     _isGeneratingSentence = true;
     notifyListeners();
 
-    LlmGenerationResult result;
-    if (isLlmReady) {
-      // Use on-device LLM (llama.cpp or template engine via platform channel).
-      result = await _llmService.generateSentence(phrase);
-    } else {
-      // LLM not loaded yet — produce a sentence immediately via template engine
-      // so the user always sees output.
-      final sw = Stopwatch()..start();
-      final sentence = _templateFallback(phrase);
-      sw.stop();
-      result = LlmGenerationResult(
-        inputTokens: phrase,
-        sentence: sentence,
-        latencyMs: sw.elapsedMilliseconds,
-        source: 'Dart fallback',
-      );
-    }
+    final result = await _grammarService.correctGrammar(phrase);
 
     if (requestId != _generationRequestId) return;
 
@@ -328,28 +248,12 @@ class DetectionProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Dart-side fallback when TinyLlama isn't loaded yet.
-  /// Produces a first-person sentence so output is always meaningful.
-  String _templateFallback(String input) {
-    final tokens = input
-        .trim()
-        .split(RegExp(r'\s+'))
-        .where((t) => t.isNotEmpty)
-        .toList();
-    if (tokens.isEmpty) return '';
-    final joined = tokens.map((t) => t.toLowerCase()).join(', ');
-    if (tokens.length == 1) {
-      return 'I want to say: ${tokens.first.toLowerCase()}.';
-    }
-    return 'I need help with: $joined.';
-  }
-
   @override
   void dispose() {
     _cameraService.dispose();
     _handLandmarkService.dispose();
     _signClassifier.dispose();
-    unawaited(_llmService.releaseModel());
+    _grammarService.dispose();
     unawaited(_ttsService.stop());
     super.dispose();
   }

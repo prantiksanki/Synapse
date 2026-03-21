@@ -5,14 +5,8 @@ class AppConfig {
   static const Duration duplicateSuppression = Duration(milliseconds: 600);
   static const Duration wordBoundary = Duration(milliseconds: 1500);
 
-  static const String modelDirectoryName = 'models';
-
-  // Filename that the GGUF will be saved as on device
-  static const String llamaModelFileName =
-      'tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf';
-
-  // Direct download URL — TinyLlama 1.1B Chat Q4_K_M (~670 MB)
-  static const String llamaModelUrl =
-      'https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf';
+  // T5 grammar model assets (bundled in APK — no download required)
+  static const String t5EncoderAsset = 'assets/models/t5_encoder.tflite';
+  static const String t5DecoderAsset = 'assets/models/t5_decoder.tflite';
+  static const String t5VocabAsset = 'assets/models/t5_vocab.txt';
 }
-

@@ -1,15 +1,16 @@
 import 'package:flutter/material.dart';
 import '../models/gesture_result.dart';
 import '../models/llm_generation_result.dart';
-import '../models/model_download_state.dart';
 import '../models/word_buffer_state.dart';
+import '../providers/detection_provider.dart';
 
 class GestureDisplay extends StatelessWidget {
   final GestureResult? result;
   final double fps;
   final WordBufferState wordBufferState;
   final LlmGenerationResult generationResult;
-  final ModelDownloadState modelDownloadState;
+  final GrammarModelStatus grammarStatus;
+  final String? grammarLoadError;
   final bool hasHandDetected;
   final bool isGeneratingSentence;
   final VoidCallback? onSpeak;
@@ -22,7 +23,8 @@ class GestureDisplay extends StatelessWidget {
     required this.fps,
     required this.wordBufferState,
     required this.generationResult,
-    required this.modelDownloadState,
+    required this.grammarStatus,
+    this.grammarLoadError,
     required this.hasHandDetected,
     required this.isGeneratingSentence,
     this.onSpeak,
@@ -37,7 +39,6 @@ class GestureDisplay extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // FPS counter
           _buildFpsCounter(),
           const SizedBox(height: 8),
           _buildModelStatus(),
@@ -46,7 +47,6 @@ class GestureDisplay extends StatelessWidget {
           const SizedBox(height: 8),
           _buildSentencePanel(),
           const SizedBox(height: 8),
-          // Gesture result
           _buildGestureResult(),
         ],
       ),
@@ -72,18 +72,22 @@ class GestureDisplay extends StatelessWidget {
   }
 
   Widget _buildModelStatus() {
-    final text = switch (modelDownloadState.status) {
-      ModelDownloadStatus.idle => 'Model idle',
-      ModelDownloadStatus.checking => 'Checking local TinyLlama model...',
-      ModelDownloadStatus.missing => 'Model missing. Starting download...',
-      ModelDownloadStatus.downloading =>
-        'Downloading model ${(modelDownloadState.progress * 100).toStringAsFixed(0)}%',
-      ModelDownloadStatus.ready => 'Model downloaded. Preparing to load...',
-      ModelDownloadStatus.loading => 'Loading TinyLlama...',
-      ModelDownloadStatus.loaded =>
-        'TinyLlama ready for offline sentence generation',
-      ModelDownloadStatus.error => modelDownloadState.error ?? 'Model error',
-    };
+    final String text;
+    final Color indicatorColor;
+
+    switch (grammarStatus) {
+      case GrammarModelStatus.loading:
+        text = 'Loading T5 grammar model...';
+        indicatorColor = Colors.lightBlueAccent;
+      case GrammarModelStatus.ready:
+        text = 'T5 grammar model ready (offline)';
+        indicatorColor = Colors.greenAccent;
+      case GrammarModelStatus.error:
+        text = grammarLoadError != null
+            ? 'Grammar model error: $grammarLoadError\n(Using Dart fallback)'
+            : 'Grammar model failed to load — using Dart fallback.';
+        indicatorColor = Colors.orangeAccent;
+    }
 
     return Container(
       width: double.infinity,
@@ -95,22 +99,33 @@ class GestureDisplay extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            'Model Status',
-            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+          Row(
+            children: [
+              const Text(
+                'Model Status',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Container(
+                width: 8,
+                height: 8,
+                decoration: BoxDecoration(
+                  color: indicatorColor,
+                  shape: BoxShape.circle,
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 6),
           Text(text, style: const TextStyle(color: Colors.white70)),
-          if (modelDownloadState.status == ModelDownloadStatus.downloading) ...[
+          if (grammarStatus == GrammarModelStatus.loading) ...[
             const SizedBox(height: 8),
-            LinearProgressIndicator(
-              value: modelDownloadState.progress > 0
-                  ? modelDownloadState.progress
-                  : null,
+            const LinearProgressIndicator(
               backgroundColor: Colors.white24,
-              valueColor: const AlwaysStoppedAnimation<Color>(
-                Colors.lightBlueAccent,
-              ),
+              valueColor: AlwaysStoppedAnimation<Color>(Colors.lightBlueAccent),
             ),
           ],
         ],
@@ -141,7 +156,6 @@ class GestureDisplay extends StatelessWidget {
                   ),
                 ),
               ),
-              // Manual send button — commits buffer immediately
               if (onSend != null)
                 TextButton.icon(
                   onPressed: onSend,
@@ -194,11 +208,12 @@ class GestureDisplay extends StatelessWidget {
     final sentence = generationResult.hasSentence
         ? generationResult.sentence
         : (isGeneratingSentence
-              ? 'Generating sentence...'
+              ? 'Correcting grammar...'
               : 'No sentence generated yet.');
-    final pendingTokens = wordBufferState.activePhrase.trim();
     final sentTokens = generationResult.inputTokens.trim();
     final source = generationResult.source.trim();
+
+    final bool isT5 = source == 'T5-Grammar';
 
     return Container(
       width: double.infinity,
@@ -233,18 +248,18 @@ class GestureDisplay extends StatelessWidget {
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               decoration: BoxDecoration(
-                color: source == 'TinyLlama'
+                color: isT5
                     ? Colors.green.withValues(alpha: 0.18)
                     : Colors.orange.withValues(alpha: 0.18),
                 borderRadius: BorderRadius.circular(999),
                 border: Border.all(
-                  color: source == 'TinyLlama' ? Colors.green : Colors.orange,
+                  color: isT5 ? Colors.green : Colors.orange,
                 ),
               ),
               child: Text(
                 'Source: $source',
                 style: TextStyle(
-                  color: source == 'TinyLlama' ? Colors.green : Colors.orange,
+                  color: isT5 ? Colors.green : Colors.orange,
                   fontSize: 12,
                   fontWeight: FontWeight.w600,
                 ),
@@ -270,16 +285,6 @@ class GestureDisplay extends StatelessWidget {
               ),
             ),
           ),
-          if (pendingTokens.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            Text(
-              'Pending tokens: $pendingTokens',
-              style: const TextStyle(
-                color: Colors.lightBlueAccent,
-                fontSize: 13,
-              ),
-            ),
-          ],
           if (generationResult.error != null &&
               generationResult.error!.isNotEmpty) ...[
             const SizedBox(height: 6),
@@ -291,7 +296,7 @@ class GestureDisplay extends StatelessWidget {
           if (sentTokens.isNotEmpty) ...[
             const SizedBox(height: 8),
             Text(
-              'Tokens sent to LLM: $sentTokens',
+              'Tokens sent to model: $sentTokens',
               style: const TextStyle(color: Colors.white60, fontSize: 13),
             ),
           ],
@@ -342,10 +347,8 @@ class GestureDisplay extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // Gesture icon
           Icon(_getGestureIcon(result!.label), color: labelColor, size: 48),
           const SizedBox(height: 8),
-          // Gesture label
           Text(
             result!.label,
             style: TextStyle(
@@ -355,7 +358,6 @@ class GestureDisplay extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 4),
-          // Confidence
           Text(
             result!.confidencePercent,
             style: TextStyle(
@@ -364,7 +366,6 @@ class GestureDisplay extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 8),
-          // Probability bars
           _buildProbabilityBars(),
         ],
       ),
@@ -388,9 +389,8 @@ class GestureDisplay extends StatelessWidget {
                   style: TextStyle(
                     color: isSelected ? Colors.white : Colors.white70,
                     fontSize: 12,
-                    fontWeight: isSelected
-                        ? FontWeight.bold
-                        : FontWeight.normal,
+                    fontWeight:
+                        isSelected ? FontWeight.bold : FontWeight.normal,
                   ),
                 ),
               ),
