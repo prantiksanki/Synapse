@@ -8,6 +8,7 @@ import '../providers/detection_provider.dart';
 import '../widgets/camera_preview.dart';
 import '../widgets/gesture_display.dart';
 import '../widgets/hand_overlay_painter.dart';
+import '../widgets/sign_image_display.dart';
 
 class DetectionScreen extends StatefulWidget {
   const DetectionScreen({super.key});
@@ -56,9 +57,12 @@ class _DetectionScreenState extends State<DetectionScreen>
       return;
     }
 
-    final status = await Permission.camera.request();
+    final statuses =
+        await [Permission.camera, Permission.microphone].request();
+    final cameraGranted = statuses[Permission.camera]?.isGranted ?? false;
+    final micGranted = statuses[Permission.microphone]?.isGranted ?? false;
 
-    if (status.isGranted) {
+    if (cameraGranted) {
       if (mounted) {
         await provider.initialize();
         if (provider.isInitialized) {
@@ -76,6 +80,16 @@ class _DetectionScreenState extends State<DetectionScreen>
           ),
         );
       }
+    }
+
+    if (!micGranted && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Microphone denied — speech mode will be unavailable'),
+          backgroundColor: Colors.orange,
+          duration: Duration(seconds: 3),
+        ),
+      );
     }
   }
 
@@ -202,57 +216,108 @@ class _DetectionScreenState extends State<DetectionScreen>
           ),
         ),
 
-        // Gesture display at bottom
+        // Bottom panel — switches between gesture display and sign image display
         Positioned(
           left: 0,
           right: 0,
           bottom: 0,
           child: SafeArea(
-            child: GestureDisplay(
-              result: provider.currentGesture,
-              fps: provider.fps,
-              wordBufferState: provider.wordBufferState,
-              generationResult: provider.generationResult,
-              grammarStatus: provider.grammarStatus,
-              grammarLoadError: provider.grammarLoadError,
-              hasHandDetected: provider.currentLandmarks != null,
-              isGeneratingSentence: provider.isGeneratingSentence,
-              onSpeak: provider.generationResult.hasSentence
-                  ? provider.speakLatestSentence
-                  : null,
-              onSend: provider.wordBufferState.activeTokens.isNotEmpty
-                  ? provider.forceGenerate
-                  : null,
-            ),
+            child: provider.appMode == AppMode.gestureMode
+                ? GestureDisplay(
+                    result: provider.currentGesture,
+                    fps: provider.fps,
+                    wordBufferState: provider.wordBufferState,
+                    generationResult: provider.generationResult,
+                    grammarStatus: provider.grammarStatus,
+                    grammarLoadError: provider.grammarStatusMessage,
+                    hasHandDetected: provider.currentLandmarks != null,
+                    isGeneratingSentence: provider.isGeneratingSentence,
+                    onSpeak: provider.generationResult.hasSentence
+                        ? provider.speakLatestSentence
+                        : null,
+                    onSend: provider.wordBufferState.activeTokens.isNotEmpty
+                        ? provider.forceGenerate
+                        : null,
+                  )
+                : SignImageDisplay(
+                    segments: provider.signImageSegments,
+                    rawSpeechText: provider.rawSpeechText,
+                    compressedKeywords: provider.compressedKeywords,
+                    listenStatus: provider.speechListenStatus,
+                    isProcessing: provider.isProcessingSpeech,
+                  ),
           ),
         ),
 
-        // Status indicator at top
-        if (!provider.isDetecting)
-          Positioned(
-            top: 16,
-            left: 0,
-            right: 0,
-            child: Center(
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 8,
-                ),
-                decoration: BoxDecoration(
-                  color: Colors.orange.withValues(alpha: 0.8),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: const Text(
-                  'Detection paused',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
+        // Top status badges
+        Positioned(
+          top: 16,
+          left: 0,
+          right: 0,
+          child: Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Mode badge
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 5,
+                  ),
+                  decoration: BoxDecoration(
+                    color: provider.appMode == AppMode.speechMode
+                        ? Colors.blue.withValues(alpha: 0.85)
+                        : Colors.black54,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        provider.appMode == AppMode.speechMode
+                            ? Icons.mic
+                            : Icons.sign_language,
+                        color: Colors.white,
+                        size: 14,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        provider.appMode == AppMode.speechMode
+                            ? 'Speech Mode'
+                            : 'Gesture Mode',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-              ),
+                if (!provider.isDetecting) ...[
+                  const SizedBox(height: 6),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 8,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.orange.withValues(alpha: 0.8),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Text(
+                      'Detection paused',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ],
+              ],
             ),
           ),
+        ),
       ],
     );
   }

@@ -76,8 +76,14 @@ class GestureDisplay extends StatelessWidget {
     final Color indicatorColor;
 
     switch (grammarStatus) {
+      case GrammarModelStatus.idle:
+        text = 'Grammar model idle';
+        indicatorColor = Colors.white38;
+      case GrammarModelStatus.downloading:
+        text = 'Downloading grammar model…';
+        indicatorColor = Colors.lightBlueAccent;
       case GrammarModelStatus.loading:
-        text = 'Loading T5 grammar model...';
+        text = 'Loading grammar model…';
         indicatorColor = Colors.lightBlueAccent;
       case GrammarModelStatus.ready:
         text = 'T5 grammar model ready (offline)';
