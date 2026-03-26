@@ -71,18 +71,8 @@ class CallStateReceiver : BroadcastReceiver(), EventChannel.StreamHandler {
         }
 
         android.util.Log.d("SYNAPSE_CallReceiver", "Sending event: $eventName")
-
-        // When the call is answered, bring Synapse back to the foreground
-        // so the sign-language bridge is visible over the Phone app.
-        if (newState == TelephonyManager.CALL_STATE_OFFHOOK) {
-            android.util.Log.d("SYNAPSE_CallReceiver", "Call active - bringing app to front")
-            mainActivity?.bringToFront()
-            // Ensure a backup attempt in case the first call is blocked by
-            // transition timing when Phone app takes priority.
-            mainActivity?.runOnUiThread {
-                mainActivity?.bringToFront()
-            }
-        }
+        // Navigation is now handled by the floating bubble in CallTranslationService.
+        // The user taps the bubble to open SYNAPSE — we no longer force the app to front.
 
         send(mapOf("event" to eventName, "number" to ""))
     }
@@ -91,6 +81,15 @@ class CallStateReceiver : BroadcastReceiver(), EventChannel.StreamHandler {
     fun sendTtsDone() {
         android.util.Log.d("SYNAPSE_CallReceiver", "Sending tts_done event")
         send(mapOf("event" to "tts_done", "number" to ""))
+    }
+
+    /**
+     * Called by MainActivity.onResume to re-sync call state after app restart.
+     * Only sends if the state has actually changed (avoids duplicate events).
+     */
+    fun sendCurrentState(eventName: String) {
+        android.util.Log.d("SYNAPSE_CallReceiver", "sendCurrentState: $eventName")
+        send(mapOf("event" to eventName, "number" to ""))
     }
 
     private fun send(payload: Map<String, String>) {

@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:speech_to_text/speech_recognition_error.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 
@@ -16,6 +17,9 @@ enum SpeechStatus { unavailable, idle, listening, error }
 /// ```
 class SpeechService {
   final SpeechToText _stt = SpeechToText();
+
+  // Channel to the native side for muting/unmuting the STT beep sounds.
+  static const _audioChannel = MethodChannel('synapse/audio_utils');
 
   SpeechStatus _status = SpeechStatus.idle;
   String? _lastError;
@@ -46,6 +50,8 @@ class SpeechService {
     if (_status == SpeechStatus.unavailable) return;
     if (_stt.isListening) return;
 
+    await _muteBeep();
+
     _status = SpeechStatus.listening;
     await _stt.listen(
       onResult: (result) {
@@ -54,8 +60,9 @@ class SpeechService {
           onResult?.call(text, result.finalResult);
         }
       },
-      listenFor: const Duration(seconds: 30),
-      pauseFor: const Duration(seconds: 3),
+      listenFor: const Duration(seconds: 120),
+      // 5 s silence before auto-stop — gives user time to pause between words.
+      pauseFor: const Duration(seconds: 5),
       listenOptions: SpeechListenOptions(
         partialResults: true,
         cancelOnError: false,
@@ -69,18 +76,21 @@ class SpeechService {
     if (!_stt.isListening) return;
     await _stt.stop();
     _status = SpeechStatus.idle;
+    await _unmuteBeep();
   }
 
   /// Cancel and discard the current recognition session.
   Future<void> cancelListening() async {
     await _stt.cancel();
     _status = SpeechStatus.idle;
+    await _unmuteBeep();
   }
 
   void _onError(SpeechRecognitionError error) {
     _lastError = error.errorMsg;
     _status = SpeechStatus.error;
     debugPrint('SpeechService error: ${error.errorMsg}');
+    _unmuteBeep();
     onStopped?.call();
   }
 
@@ -88,8 +98,26 @@ class SpeechService {
     debugPrint('SpeechService status: $status');
     if (status == 'done' || status == 'notListening') {
       _status = SpeechStatus.idle;
+      _unmuteBeep();
       onStopped?.call();
     }
+  }
+
+  // Silences Android UI tones during STT sessions.
+  // The native side mutes STREAM_NOTIFICATION and STREAM_SYSTEM; add STREAM_RING
+  // in case the platform is using it for STT start/stop tones.
+  Future<void> _muteBeep() async {
+    try {
+      await _audioChannel.invokeMethod('muteBeep');
+    } catch (_) {
+      // Non-fatal — if the channel isn't set up, beeps will just play.
+    }
+  }
+
+  Future<void> _unmuteBeep() async {
+    try {
+      await _audioChannel.invokeMethod('unmuteBeep');
+    } catch (_) {}
   }
 
   void dispose() {

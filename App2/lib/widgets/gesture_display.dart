@@ -57,13 +57,13 @@ class GestureDisplay extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
-        color: Colors.black54,
+        color: const Color(0xFFF8F7FF),
         borderRadius: BorderRadius.circular(8),
       ),
       child: Text(
         'FPS: ${fps.toStringAsFixed(1)}',
         style: const TextStyle(
-          color: Colors.white,
+          color: Color(0xFF1A1A2E),
           fontSize: 14,
           fontWeight: FontWeight.bold,
         ),
@@ -78,28 +78,28 @@ class GestureDisplay extends StatelessWidget {
     switch (grammarStatus) {
       case GrammarModelStatus.idle:
         text = 'Grammar model idle';
-        indicatorColor = Colors.white38;
+        indicatorColor = const Color(0xFF9CA3AF);
       case GrammarModelStatus.downloading:
         text = 'Downloading grammar model…';
-        indicatorColor = Colors.lightBlueAccent;
+        indicatorColor = const Color(0xFF8B5CF6);
       case GrammarModelStatus.loading:
         text = 'Loading grammar model…';
-        indicatorColor = Colors.lightBlueAccent;
+        indicatorColor = const Color(0xFF8B5CF6);
       case GrammarModelStatus.ready:
         text = 'T5 grammar model ready (offline)';
-        indicatorColor = Colors.greenAccent;
+        indicatorColor = const Color(0xFF34D399);
       case GrammarModelStatus.error:
         text = grammarLoadError != null
             ? 'Grammar model error: $grammarLoadError\n(Using Dart fallback)'
             : 'Grammar model failed to load — using Dart fallback.';
-        indicatorColor = Colors.orangeAccent;
+        indicatorColor = const Color(0xFFF59E0B);
     }
 
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.black54,
+        color: const Color(0xFFF8F7FF),
         borderRadius: BorderRadius.circular(12),
       ),
       child: Column(
@@ -110,7 +110,7 @@ class GestureDisplay extends StatelessWidget {
               const Text(
                 'Model Status',
                 style: TextStyle(
-                  color: Colors.white,
+                  color: Color(0xFF1A1A2E),
                   fontWeight: FontWeight.bold,
                 ),
               ),
@@ -126,12 +126,12 @@ class GestureDisplay extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 6),
-          Text(text, style: const TextStyle(color: Colors.white70)),
+          Text(text, style: const TextStyle(color: Color(0xFF4B5563))),
           if (grammarStatus == GrammarModelStatus.loading) ...[
             const SizedBox(height: 8),
             const LinearProgressIndicator(
-              backgroundColor: Colors.white24,
-              valueColor: AlwaysStoppedAnimation<Color>(Colors.lightBlueAccent),
+              backgroundColor: Color(0xFFE5E7EB),
+              valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF8B5CF6)),
             ),
           ],
         ],
@@ -145,7 +145,7 @@ class GestureDisplay extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.black54,
+        color: const Color(0xFFF8F7FF),
         borderRadius: BorderRadius.circular(12),
       ),
       child: Column(
@@ -157,7 +157,7 @@ class GestureDisplay extends StatelessWidget {
                 child: Text(
                   'Detected Sign Buffer',
                   style: TextStyle(
-                    color: Colors.white,
+                    color: Color(0xFF1A1A2E),
                     fontWeight: FontWeight.bold,
                   ),
                 ),
@@ -168,12 +168,12 @@ class GestureDisplay extends StatelessWidget {
                   icon: const Icon(
                     Icons.send,
                     size: 16,
-                    color: Colors.lightBlueAccent,
+                    color: Color(0xFF8B5CF6),
                   ),
                   label: const Text(
                     'Send',
                     style: TextStyle(
-                      color: Colors.lightBlueAccent,
+                      color: Color(0xFF8B5CF6),
                       fontSize: 13,
                     ),
                   ),
@@ -193,7 +193,7 @@ class GestureDisplay extends StatelessWidget {
                 ? wordBufferState.activePhrase
                 : 'Waiting for stable sign tokens...',
             style: TextStyle(
-              color: hasTokens ? Colors.white : Colors.white70,
+              color: hasTokens ? const Color(0xFF1A1A2E) : const Color(0xFF4B5563),
               fontSize: 16,
               fontWeight: hasTokens ? FontWeight.w600 : FontWeight.normal,
             ),
@@ -202,7 +202,7 @@ class GestureDisplay extends StatelessWidget {
             const SizedBox(height: 6),
             Text(
               'Last: ${wordBufferState.lastCommittedPhrase}',
-              style: const TextStyle(color: Colors.white54, fontSize: 13),
+              style: const TextStyle(color: Color(0xFF6B7280), fontSize: 13),
             ),
           ],
         ],
@@ -225,29 +225,18 @@ class GestureDisplay extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.black54,
+        color: const Color(0xFFF8F7FF),
         borderRadius: BorderRadius.circular(12),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              const Expanded(
-                child: Text(
-                  'Natural Sentence',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-              if (generationResult.hasSentence && onSpeak != null)
-                IconButton(
-                  onPressed: onSpeak,
-                  icon: const Icon(Icons.volume_up, color: Colors.white),
-                ),
-            ],
+          const Text(
+            'Natural Sentence',
+            style: TextStyle(
+              color: Color(0xFF1A1A2E),
+              fontWeight: FontWeight.bold,
+            ),
           ),
           if (source.isNotEmpty) ...[
             const SizedBox(height: 2),
@@ -255,17 +244,17 @@ class GestureDisplay extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               decoration: BoxDecoration(
                 color: isT5
-                    ? Colors.green.withValues(alpha: 0.18)
-                    : Colors.orange.withValues(alpha: 0.18),
+                    ? const Color(0xFF34D399).withValues(alpha: 0.15)
+                    : const Color(0xFFF59E0B).withValues(alpha: 0.15),
                 borderRadius: BorderRadius.circular(999),
                 border: Border.all(
-                  color: isT5 ? Colors.green : Colors.orange,
+                  color: isT5 ? const Color(0xFF34D399) : const Color(0xFFF59E0B),
                 ),
               ),
               child: Text(
                 'Source: $source',
                 style: TextStyle(
-                  color: isT5 ? Colors.green : Colors.orange,
+                  color: isT5 ? const Color(0xFF34D399) : const Color(0xFFF59E0B),
                   fontSize: 12,
                   fontWeight: FontWeight.w600,
                 ),
@@ -277,14 +266,14 @@ class GestureDisplay extends StatelessWidget {
             width: double.infinity,
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.05),
+              color: const Color(0xFFF0EEFF),
               borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: Colors.white12),
+              border: Border.all(color: const Color(0xFFE5E7EB)),
             ),
             child: Text(
               sentence,
               style: const TextStyle(
-                color: Colors.white,
+                color: Color(0xFF1A1A2E),
                 fontSize: 18,
                 fontWeight: FontWeight.w600,
                 height: 1.4,
@@ -296,21 +285,21 @@ class GestureDisplay extends StatelessWidget {
             const SizedBox(height: 6),
             Text(
               generationResult.error!,
-              style: const TextStyle(color: Colors.redAccent),
+              style: const TextStyle(color: Color(0xFFEF4444)),
             ),
           ],
           if (sentTokens.isNotEmpty) ...[
             const SizedBox(height: 8),
             Text(
               'Tokens sent to model: $sentTokens',
-              style: const TextStyle(color: Colors.white60, fontSize: 13),
+              style: const TextStyle(color: Color(0xFF6B7280), fontSize: 13),
             ),
           ],
           if (generationResult.hasSentence) ...[
             const SizedBox(height: 4),
             Text(
               'Latency: ${generationResult.latencyMs} ms',
-              style: const TextStyle(color: Colors.white54),
+              style: const TextStyle(color: Color(0xFF6B7280)),
             ),
           ],
         ],
@@ -323,30 +312,32 @@ class GestureDisplay extends StatelessWidget {
       return Container(
         padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
         decoration: BoxDecoration(
-          color: Colors.black54,
+          color: const Color(0xFFF8F7FF),
           borderRadius: BorderRadius.circular(12),
         ),
         child: Text(
           hasHandDetected
               ? 'Hand detected, classifying...'
               : 'No hand detected',
-          style: const TextStyle(color: Colors.white70, fontSize: 18),
+          style: const TextStyle(color: Color(0xFF4B5563), fontSize: 18),
         ),
       );
     }
 
     final isConfident = result!.confidence >= confidenceThreshold;
-    final labelColor = isConfident ? Colors.white : Colors.white70;
+    final labelColor = isConfident ? Colors.white : const Color(0xFF4B5563);
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
       decoration: BoxDecoration(
         color: isConfident
             ? _getGestureColor(result!.label).withValues(alpha: 0.8)
-            : Colors.black54,
+            : const Color(0xFFF8F7FF),
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
-          color: isConfident ? Colors.white : Colors.grey,
+          color: isConfident
+              ? Colors.white.withValues(alpha: 0.8)
+              : const Color(0xFFE5E7EB),
           width: 2,
         ),
       ),
@@ -393,7 +384,7 @@ class GestureDisplay extends StatelessWidget {
                 child: Text(
                   entry.key,
                   style: TextStyle(
-                    color: isSelected ? Colors.white : Colors.white70,
+                    color: isSelected ? Colors.white : const Color(0xFF4B5563),
                     fontSize: 12,
                     fontWeight:
                         isSelected ? FontWeight.bold : FontWeight.normal,
@@ -403,9 +394,9 @@ class GestureDisplay extends StatelessWidget {
               Expanded(
                 child: LinearProgressIndicator(
                   value: entry.value,
-                  backgroundColor: Colors.white24,
+                  backgroundColor: const Color(0xFFE5E7EB),
                   valueColor: AlwaysStoppedAnimation<Color>(
-                    isSelected ? Colors.white : Colors.white54,
+                    isSelected ? Colors.white : const Color(0xFF6B7280),
                   ),
                 ),
               ),
@@ -415,7 +406,7 @@ class GestureDisplay extends StatelessWidget {
                 child: Text(
                   '${(entry.value * 100).toStringAsFixed(0)}%',
                   style: TextStyle(
-                    color: isSelected ? Colors.white : Colors.white70,
+                    color: isSelected ? Colors.white : const Color(0xFF4B5563),
                     fontSize: 12,
                   ),
                 ),
@@ -430,15 +421,15 @@ class GestureDisplay extends StatelessWidget {
   Color _getGestureColor(String label) {
     switch (label) {
       case 'Open':
-        return Colors.green;
+        return const Color(0xFF34D399);
       case 'Close':
-        return Colors.red;
+        return const Color(0xFFEF4444);
       case 'Pointer':
-        return Colors.blue;
+        return const Color(0xFF60A5FA);
       case 'OK':
-        return Colors.orange;
+        return const Color(0xFFF59E0B);
       default:
-        return Colors.grey;
+        return const Color(0xFF9CA3AF);
     }
   }
 

@@ -44,9 +44,10 @@ class SignImageDisplay extends StatelessWidget {
     final isProcessingState = listenStatus == SpeechListenStatus.processing;
 
     final Color borderColor =
-        isListening ? Colors.lightBlueAccent : Colors.white24;
-    final Color bgColor =
-        isListening ? Colors.blue.withValues(alpha: 0.3) : Colors.black54;
+        isListening ? const Color(0xFF60A5FA) : const Color(0xFFE5E7EB);
+    final Color bgColor = isListening
+        ? const Color(0xFF60A5FA).withValues(alpha: 0.12)
+        : const Color(0xFFF8F7FF);
 
     String label;
     if (isProcessingState) {
@@ -54,7 +55,7 @@ class SignImageDisplay extends StatelessWidget {
     } else if (isListening) {
       label = 'Listening...';
     } else {
-      label = 'Show your hand to switch back to gesture mode';
+      label = 'Microphone ready — speak anytime';
     }
 
     return Container(
@@ -69,7 +70,7 @@ class SignImageDisplay extends StatelessWidget {
         children: [
           Icon(
             isListening ? Icons.mic : Icons.mic_off,
-            color: isListening ? Colors.lightBlueAccent : Colors.white54,
+            color: isListening ? const Color(0xFF60A5FA) : const Color(0xFF6B7280),
             size: 16,
           ),
           const SizedBox(width: 6),
@@ -77,7 +78,7 @@ class SignImageDisplay extends StatelessWidget {
             child: Text(
               label,
               style: TextStyle(
-                color: isListening ? Colors.lightBlueAccent : Colors.white54,
+                color: isListening ? const Color(0xFF60A5FA) : const Color(0xFF6B7280),
                 fontSize: 12,
               ),
             ),
@@ -89,7 +90,7 @@ class SignImageDisplay extends StatelessWidget {
               height: 12,
               child: CircularProgressIndicator(
                 strokeWidth: 2,
-                color: Colors.lightBlueAccent,
+                color: Color(0xFF8B5CF6),
               ),
             ),
           ],
@@ -108,7 +109,7 @@ class SignImageDisplay extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.black54,
+        color: const Color(0xFFF8F7FF),
         borderRadius: BorderRadius.circular(12),
       ),
       child: Column(
@@ -116,13 +117,13 @@ class SignImageDisplay extends StatelessWidget {
         children: [
           const Text(
             'Heard',
-            style: TextStyle(color: Colors.white54, fontSize: 11),
+            style: TextStyle(color: Color(0xFF6B7280), fontSize: 11),
           ),
           const SizedBox(height: 4),
           Text(
             hasRaw ? rawSpeechText : 'Waiting for speech...',
             style: TextStyle(
-              color: hasRaw ? Colors.white : Colors.white38,
+              color: hasRaw ? const Color(0xFF1A1A2E) : const Color(0xFF9CA3AF),
               fontSize: 15,
               fontWeight: FontWeight.w500,
             ),
@@ -131,13 +132,13 @@ class SignImageDisplay extends StatelessWidget {
             const SizedBox(height: 8),
             const Text(
               'Keywords',
-              style: TextStyle(color: Colors.white54, fontSize: 11),
+              style: TextStyle(color: Color(0xFF6B7280), fontSize: 11),
             ),
             const SizedBox(height: 2),
             Text(
               compressedKeywords,
               style: const TextStyle(
-                color: Colors.lightBlueAccent,
+                color: Color(0xFF60A5FA),
                 fontSize: 14,
                 fontWeight: FontWeight.w600,
               ),
@@ -155,13 +156,13 @@ class SignImageDisplay extends StatelessWidget {
         height: 96,
         padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
-          color: Colors.black54,
+          color: const Color(0xFFF8F7FF),
           borderRadius: BorderRadius.circular(12),
         ),
         child: const Center(
           child: Text(
             'Sign images will appear here',
-            style: TextStyle(color: Colors.white38, fontSize: 14),
+            style: TextStyle(color: Color(0xFF9CA3AF), fontSize: 14),
           ),
         ),
       );
@@ -171,7 +172,7 @@ class SignImageDisplay extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
-        color: Colors.black54,
+        color: const Color(0xFFF8F7FF),
         borderRadius: BorderRadius.circular(12),
       ),
       child: SingleChildScrollView(
@@ -192,7 +193,7 @@ class SignImageDisplay extends StatelessWidget {
                     height: 64,
                     decoration: BoxDecoration(
                       borderRadius: BorderRadius.circular(8),
-                      color: Colors.white10,
+                      color: const Color(0xFFF0EEFF),
                     ),
                     child: ClipRRect(
                       borderRadius: BorderRadius.circular(8),
@@ -206,7 +207,7 @@ class SignImageDisplay extends StatelessWidget {
                   Text(
                     seg.char!,
                     style: const TextStyle(
-                      color: Colors.white70,
+                      color: Color(0xFF4B5563),
                       fontSize: 11,
                       fontWeight: FontWeight.bold,
                     ),

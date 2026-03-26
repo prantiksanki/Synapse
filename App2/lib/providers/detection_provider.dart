@@ -22,7 +22,7 @@ enum DetectionState { uninitialized, initializing, ready, detecting, error }
 
 enum GrammarModelStatus { idle, downloading, loading, ready, error }
 
-enum AppMode { gestureMode, speechMode }
+enum AppMode { gestureMode, speechMode, callMode }
 
 class DetectionProvider extends ChangeNotifier {
   static const String unsupportedPlatformMessage =
@@ -58,10 +58,12 @@ class DetectionProvider extends ChangeNotifier {
   double _fps = 0;
   DateTime _lastFpsUpdate = DateTime.now();
 
-  // --- Speech / sign-image mode ---
-  AppMode _appMode = AppMode.gestureMode;
-  DateTime? _handAbsenceStart;
-  static const Duration _handAbsenceThreshold = Duration(milliseconds: 1500);
+  // --- Hand presence / mode ---
+  bool _handIsPresent = false;
+
+  // Debounce guard: prevent STT restart spam from camera frames
+  Timer? _sttRestartDebounce;
+
 
   String _rawSpeechText = '';
   String _compressedKeywords = '';
@@ -69,6 +71,15 @@ class DetectionProvider extends ChangeNotifier {
   bool _isProcessingSpeech = false;
   SpeechListenStatus _speechListenStatus = SpeechListenStatus.idle;
   bool _speechServiceReady = false;
+
+  // --- Call mode ---
+  /// Set by [CallBridgeProvider] to receive completed sentences during a call.
+  void Function(String sentence)? onSentenceForCall;
+
+  /// True while a phone call is active — call bridge owns STT during this time.
+  bool _callModeActive = false;
+
+  // ── Computed getters ────────────────────────────────────────────────────────
 
   DetectionState get state => _state;
   HandLandmarks? get currentLandmarks => _currentLandmarks;
@@ -92,14 +103,24 @@ class DetectionProvider extends ChangeNotifier {
   String get downloadFileLabel => _downloadFileLabel;
   bool get isGrammarReady => _grammarStatus == GrammarModelStatus.ready;
 
-  // Speech / sign-image mode getters
-  AppMode get appMode => _appMode;
+  /// Computed app mode — derived from live state, not stored.
+  AppMode get appMode {
+    if (_callModeActive) return AppMode.callMode;
+    if (_handIsPresent) return AppMode.gestureMode;
+    return AppMode.speechMode;
+  }
+
+  bool get handIsPresent => _handIsPresent;
+  bool get callModeActive => _callModeActive;
+
   String get rawSpeechText => _rawSpeechText;
   String get compressedKeywords => _compressedKeywords;
   List<SignImageSegment> get signImageSegments => _signImageSegments;
   bool get isProcessingSpeech => _isProcessingSpeech;
   SpeechListenStatus get speechListenStatus => _speechListenStatus;
   bool get speechServiceReady => _speechServiceReady;
+
+  // ── Initialize ──────────────────────────────────────────────────────────────
 
   Future<void> initialize() async {
     if (_state == DetectionState.initializing) return;
@@ -125,6 +146,9 @@ class DetectionProvider extends ChangeNotifier {
 
       _state = DetectionState.ready;
       notifyListeners();
+
+      // Start STT immediately so voice-to-sign is always available.
+      if (_speechServiceReady) _ensureSttRunning();
 
       unawaited(_prepareGrammarModel());
     } catch (e) {
@@ -245,9 +269,9 @@ class DetectionProvider extends ChangeNotifier {
       return;
     }
 
-    // Hand is present — reset absence timer and return to gesture mode if needed
-    _handAbsenceStart = null;
-    if (_appMode == AppMode.speechMode) _switchToGestureMode();
+    // Hand is present — update flag, keep STT running.
+    _handIsPresent = true;
+    // STT continues running — do NOT stop it when hand is present.
 
     _currentLandmarks = HandLandmarks.fromList(landmarks);
 
@@ -311,55 +335,72 @@ class DetectionProvider extends ChangeNotifier {
     _generationResult = result;
     _isGeneratingSentence = false;
     notifyListeners();
-  }
 
-  // ---------------------------------------------------------------------------
-  // Speech / sign-image mode helpers
-  // ---------------------------------------------------------------------------
-
-  void _onNoHandDetected() {
-    _handAbsenceStart ??= DateTime.now();
-    if (_appMode == AppMode.gestureMode &&
-        DateTime.now().difference(_handAbsenceStart!) >=
-            _handAbsenceThreshold) {
-      _switchToSpeechMode();
+    // Auto-speak in normal mode; call bridge handles TTS during calls
+    if (_callModeActive) {
+      onSentenceForCall?.call(result.sentence);
+    } else if (result.hasSentence) {
+      unawaited(_ttsService.speak(result.sentence));
     }
   }
 
-  void _switchToSpeechMode() {
-    if (_appMode == AppMode.speechMode) return;
-    _appMode = AppMode.speechMode;
-    _rawSpeechText = '';
-    _compressedKeywords = '';
-    _signImageSegments = [];
-    if (_speechServiceReady) unawaited(_startListeningLoop());
-    notifyListeners();
-  }
+  // ── Call mode public API ────────────────────────────────────────────────────
 
-  void _switchToGestureMode() {
-    if (_appMode == AppMode.gestureMode) return;
-    _appMode = AppMode.gestureMode;
-    _handAbsenceStart = null;
+  /// Called by [CallBridgeProvider] when a phone call becomes active.
+  void enterCallMode() {
+    _callModeActive = true;
+    // Call bridge owns STT during calls — stop provider STT.
     unawaited(_speechService.stopListening());
     _speechListenStatus = SpeechListenStatus.idle;
     notifyListeners();
   }
 
-  Future<void> _startListeningLoop() async {
-    if (_appMode != AppMode.speechMode || _speechService.isListening) return;
-    _speechListenStatus = SpeechListenStatus.listening;
+  /// Called by [CallBridgeProvider] when the phone call ends.
+  void exitCallMode() {
+    _callModeActive = false;
+    // Resume always-on STT.
+    if (_speechServiceReady) _ensureSttRunning();
     notifyListeners();
-    await _speechService.startListening();
+  }
+
+  /// Public entry point for call mode: process the caller's transcribed speech
+  /// into sign images without switching app mode.
+  Future<void> processCallerSpeech(String text) => _processSpeechToSigns(text);
+
+  // ── STT helpers ─────────────────────────────────────────────────────────────
+
+  /// Ensures STT is running unless a call is active or it's already running.
+  /// Uses a debounce timer so rapid calls (e.g. from camera frames) collapse
+  /// into a single restart attempt.
+  void _ensureSttRunning({Duration delay = Duration.zero}) {
+    if (!_speechServiceReady) return;
+    if (_callModeActive) return;
+    if (_speechService.isListening) return;
+    _sttRestartDebounce?.cancel();
+    _sttRestartDebounce = Timer(delay, () {
+      if (_callModeActive) return;
+      if (_speechService.isListening) return;
+      _speechListenStatus = SpeechListenStatus.listening;
+      unawaited(_speechService.startListening());
+    });
+  }
+
+  void _onNoHandDetected() {
+    if (_callModeActive) return;
+    // Only act on the first frame of absence — do NOT call _ensureSttRunning
+    // on every frame (camera runs at 30 fps and would hammer the STT restart).
+    if (_handIsPresent) {
+      _handIsPresent = false;
+      _ensureSttRunning();
+    }
   }
 
   void _onSpeechStopped() {
-    if (_appMode != AppMode.speechMode) return;
     _speechListenStatus = SpeechListenStatus.idle;
     notifyListeners();
-    // Auto-restart after a brief pause to keep listening continuously.
-    Future.delayed(const Duration(milliseconds: 300), () {
-      if (_appMode == AppMode.speechMode) unawaited(_startListeningLoop());
-    });
+    // Restart after a stable delay — long enough to avoid rapid cycling but
+    // short enough that the user doesn't notice a gap.
+    _ensureSttRunning(delay: const Duration(seconds: 1));
   }
 
   void _onSpeechResult(String text, bool isFinal) {
@@ -376,7 +417,6 @@ class DetectionProvider extends ChangeNotifier {
 
     String keywords;
     if (_grammarService.isReady) {
-      // Use T5 to normalise grammar first, then apply Dart stop-word filter.
       final t5Result = await _grammarService.correctGrammar(text);
       final t5Out = t5Result.sentence.trim();
       final base = t5Out.isNotEmpty ? t5Out : text;
@@ -392,7 +432,7 @@ class DetectionProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ---------------------------------------------------------------------------
+  // ── Dispose ─────────────────────────────────────────────────────────────────
 
   @override
   void dispose() {

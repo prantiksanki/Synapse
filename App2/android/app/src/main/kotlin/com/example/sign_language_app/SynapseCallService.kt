@@ -42,15 +42,12 @@ class SynapseCallService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        android.util.Log.d("SYNAPSE_Call", "SynapseCallService.onCreate()")
+        android.util.Log.d("SYNAPSE_Call", "SynapseCallService.onCreate() — legacy service, not used")
         try {
             audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
             ttsService = SynapseTtsService(this)
-            createNotificationChannel()
-            startForeground(NOTIFICATION_ID, buildNotification(fullScreen = false))
         } catch (e: Exception) {
             android.util.Log.e("SYNAPSE_Call", "Error in onCreate: ${e.message}", e)
-            throw e
         }
     }
 

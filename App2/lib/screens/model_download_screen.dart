@@ -58,7 +58,7 @@ class _ModelDownloadScreenState extends State<ModelDownloadScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.black,
+      backgroundColor: const Color(0xFFF0EEFF),
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 48),
@@ -72,7 +72,7 @@ class _ModelDownloadScreenState extends State<ModelDownloadScreen> {
                   const Text(
                     AppConfig.appTitle,
                     style: TextStyle(
-                      color: Colors.white,
+                      color: Color(0xFF1A1A2E),
                       fontSize: 36,
                       fontWeight: FontWeight.bold,
                       letterSpacing: 6,
@@ -81,7 +81,7 @@ class _ModelDownloadScreenState extends State<ModelDownloadScreen> {
                   const SizedBox(height: 8),
                   const Text(
                     'Sign Language to Speech',
-                    style: TextStyle(color: Colors.white54, fontSize: 14),
+                    style: TextStyle(color: Color(0xFF6B7280), fontSize: 14),
                   ),
                   const SizedBox(height: 64),
 
@@ -90,12 +90,19 @@ class _ModelDownloadScreenState extends State<ModelDownloadScreen> {
                     width: 80,
                     height: 80,
                     decoration: BoxDecoration(
-                      color: Colors.white10,
+                      color: Colors.white,
                       borderRadius: BorderRadius.circular(20),
+                      boxShadow: [
+                        BoxShadow(
+                          color: const Color(0xFF1A1A2E).withValues(alpha: 0.08),
+                          blurRadius: 16,
+                          offset: const Offset(0, 4),
+                        ),
+                      ],
                     ),
                     child: const Icon(
                       Icons.download_rounded,
-                      color: Colors.lightBlueAccent,
+                      color: Color(0xFF8B5CF6),
                       size: 44,
                     ),
                   ),
@@ -104,7 +111,7 @@ class _ModelDownloadScreenState extends State<ModelDownloadScreen> {
                   const Text(
                     'Downloading Grammar Model',
                     style: TextStyle(
-                      color: Colors.white,
+                      color: Color(0xFF1A1A2E),
                       fontSize: 18,
                       fontWeight: FontWeight.w600,
                     ),
@@ -114,7 +121,7 @@ class _ModelDownloadScreenState extends State<ModelDownloadScreen> {
                     'This is a one-time download of ${AppConfig.t5ModelSizeLabel}.\n'
                     'The model runs fully offline after this.',
                     textAlign: TextAlign.center,
-                    style: const TextStyle(color: Colors.white54, fontSize: 13, height: 1.6),
+                    style: const TextStyle(color: Color(0xFF6B7280), fontSize: 13, height: 1.6),
                   ),
                   const SizedBox(height: 40),
 
@@ -152,7 +159,7 @@ class _ModelDownloadScreenState extends State<ModelDownloadScreen> {
             padding: const EdgeInsets.only(bottom: 8),
             child: Text(
               'File: $fileLabel',
-              style: const TextStyle(color: Colors.white70, fontSize: 13),
+              style: const TextStyle(color: Color(0xFF4B5563), fontSize: 13),
             ),
           ),
 
@@ -164,9 +171,9 @@ class _ModelDownloadScreenState extends State<ModelDownloadScreen> {
                 ? (isDone ? 1.0 : null)
                 : (progress > 0 ? progress : null),
             minHeight: 8,
-            backgroundColor: Colors.white12,
+            backgroundColor: const Color(0xFFE5E7EB),
             valueColor: AlwaysStoppedAnimation<Color>(
-              isDone ? Colors.greenAccent : Colors.lightBlueAccent,
+              isDone ? const Color(0xFF34D399) : const Color(0xFF8B5CF6),
             ),
           ),
         ),
@@ -176,7 +183,7 @@ class _ModelDownloadScreenState extends State<ModelDownloadScreen> {
         Text(
           message.isNotEmpty ? message : 'Preparing…',
           textAlign: TextAlign.center,
-          style: const TextStyle(color: Colors.white60, fontSize: 13),
+          style: const TextStyle(color: Color(0xFF6B7280), fontSize: 13),
         ),
 
         if (status == GrammarModelStatus.downloading && progress > 0) ...[
@@ -184,7 +191,7 @@ class _ModelDownloadScreenState extends State<ModelDownloadScreen> {
           Text(
             '${(progress * 100).toStringAsFixed(0)}%',
             style: const TextStyle(
-              color: Colors.lightBlueAccent,
+              color: Color(0xFF8B5CF6),
               fontSize: 20,
               fontWeight: FontWeight.bold,
             ),
@@ -193,11 +200,11 @@ class _ModelDownloadScreenState extends State<ModelDownloadScreen> {
 
         if (isDone) ...[
           const SizedBox(height: 20),
-          const Icon(Icons.check_circle_outline, color: Colors.greenAccent, size: 40),
+          const Icon(Icons.check_circle_outline, color: Color(0xFF34D399), size: 40),
           const SizedBox(height: 8),
           const Text(
             'Ready! Starting app…',
-            style: TextStyle(color: Colors.greenAccent, fontSize: 14),
+            style: TextStyle(color: Color(0xFF34D399), fontSize: 14),
           ),
         ],
       ],
@@ -207,17 +214,17 @@ class _ModelDownloadScreenState extends State<ModelDownloadScreen> {
   Widget _buildError() {
     return Column(
       children: [
-        const Icon(Icons.wifi_off_rounded, color: Colors.redAccent, size: 48),
+        const Icon(Icons.wifi_off_rounded, color: Color(0xFFEF4444), size: 48),
         const SizedBox(height: 16),
         const Text(
           'Download Failed',
-          style: TextStyle(color: Colors.redAccent, fontSize: 16, fontWeight: FontWeight.bold),
+          style: TextStyle(color: Color(0xFFEF4444), fontSize: 16, fontWeight: FontWeight.bold),
         ),
         const SizedBox(height: 8),
         Text(
           _errorMessage,
           textAlign: TextAlign.center,
-          style: const TextStyle(color: Colors.white54, fontSize: 12),
+          style: const TextStyle(color: Color(0xFF6B7280), fontSize: 12),
         ),
         const SizedBox(height: 28),
         ElevatedButton.icon(
@@ -232,8 +239,8 @@ class _ModelDownloadScreenState extends State<ModelDownloadScreen> {
           icon: const Icon(Icons.refresh),
           label: const Text('Retry'),
           style: ElevatedButton.styleFrom(
-            backgroundColor: Colors.lightBlueAccent,
-            foregroundColor: Colors.black,
+            backgroundColor: const Color(0xFF8B5CF6),
+            foregroundColor: Colors.white,
             padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 14),
           ),
         ),
@@ -242,7 +249,7 @@ class _ModelDownloadScreenState extends State<ModelDownloadScreen> {
           onPressed: _goToDetection,
           child: const Text(
             'Skip — use basic mode',
-            style: TextStyle(color: Colors.white38),
+            style: TextStyle(color: Color(0xFF9CA3AF)),
           ),
         ),
       ],
