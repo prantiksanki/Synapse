@@ -1,10 +1,12 @@
 // SYNAPSE WebRTC Signaling Server
 // Run: npm install && node index.js
 // Port: 3000 (or set PORT env var)
+// MongoDB: set MONGODB_URI env var or defaults to mongodb://localhost:27017/synapse
 
-const express = require('express');
-const http    = require('http');
+const express  = require('express');
+const http     = require('http');
 const { Server } = require('socket.io');
+const mongoose = require('mongoose');
 
 const app    = express();
 const server = http.createServer(app);
@@ -12,8 +14,26 @@ const io     = new Server(server, {
   cors: { origin: '*', methods: ['GET', 'POST'] },
 });
 
-const PORT = process.env.PORT || 3000;
+app.use(express.json());
 
+const PORT         = process.env.PORT         || 3000;
+const MONGODB_URI  = process.env.MONGODB_URI  || 'mongodb://localhost:27017/synapse';
+
+// ── MongoDB User schema ───────────────────────────────────────────────────────
+const userSchema = new mongoose.Schema({
+  username:  { type: String, required: true, unique: true, trim: true },
+  role:      { type: String, enum: ['deaf', 'caller'], required: true },
+  createdAt: { type: Date, default: Date.now },
+  lastSeen:  { type: Date, default: Date.now },
+});
+const User = mongoose.model('User', userSchema);
+
+// Connect to MongoDB (non-blocking — server still starts if DB is down)
+mongoose.connect(MONGODB_URI)
+  .then(() => console.log(`[DB] Connected to MongoDB: ${MONGODB_URI}`))
+  .catch((err) => console.warn(`[DB] MongoDB connection failed (in-memory mode active): ${err.message}`));
+
+// ── In-memory real-time tracking (unchanged) ──────────────────────────────────
 // users: username → { socketId, role: 'deaf'|'caller', status: 'online'|'in_call' }
 const users = new Map();
 // activeCalls: callId → { callerId, calleeId, callerSocketId, calleeSocketId }
@@ -31,26 +51,42 @@ function broadcastUserList() {
   io.emit('user_list', list);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Socket events ─────────────────────────────────────────────────────────────
 io.on('connection', (socket) => {
   console.log(`[+] Connected: ${socket.id}`);
 
-  // ── REGISTER ───────────────────────────────────────────────────────────────
+  // ── REGISTER ─────────────────────────────────────────────────────────────
   // Client emits: { username: string, role: 'deaf' | 'caller' }
-  socket.on('register_user', ({ username, role }) => {
+  socket.on('register_user', async ({ username, role }) => {
     if (!username || !role) return;
+
+    // Clean up any previous socket entry for this socket id
     for (const [u, info] of users) {
       if (info.socketId === socket.id) users.delete(u);
     }
+
+    // Update in-memory map
     users.set(username, { socketId: socket.id, role, status: 'online' });
     socket.data.username = username;
     socket.data.role = role;
+
     socket.emit('registered', { username });
     broadcastUserList();
     console.log(`[R] ${username} (${role})`);
+
+    // Persist to MongoDB (upsert)
+    try {
+      await User.findOneAndUpdate(
+        { username },
+        { role, lastSeen: new Date() },
+        { upsert: true, new: true, setDefaultsOnInsert: true },
+      );
+    } catch (err) {
+      console.warn(`[DB] Upsert failed for ${username}: ${err.message}`);
+    }
   });
 
-  // ── CALL USER ──────────────────────────────────────────────────────────────
+  // ── CALL USER ─────────────────────────────────────────────────────────────
   socket.on('call_user', ({ targetUsername, callType }) => {
     const callerUsername = socket.data.username;
     if (!callerUsername) return socket.emit('error', { message: 'Not registered' });
@@ -80,7 +116,7 @@ io.on('connection', (socket) => {
     console.log(`[CALL] ${callerUsername} -> ${targetUsername} (${callId})`);
   });
 
-  // ── ACCEPT CALL ────────────────────────────────────────────────────────────
+  // ── ACCEPT CALL ───────────────────────────────────────────────────────────
   socket.on('accept_call', ({ callId }) => {
     const call = activeCalls.get(callId);
     if (!call) return;
@@ -88,7 +124,7 @@ io.on('connection', (socket) => {
     console.log(`[ACC] ${callId}`);
   });
 
-  // ── REJECT CALL ────────────────────────────────────────────────────────────
+  // ── REJECT CALL ───────────────────────────────────────────────────────────
   socket.on('reject_call', ({ callId }) => {
     const call = activeCalls.get(callId);
     if (!call) return;
@@ -97,7 +133,7 @@ io.on('connection', (socket) => {
     console.log(`[REJ] ${callId}`);
   });
 
-  // ── END CALL ───────────────────────────────────────────────────────────────
+  // ── END CALL ──────────────────────────────────────────────────────────────
   socket.on('end_call', ({ callId }) => {
     const call = activeCalls.get(callId);
     if (!call) return;
@@ -107,28 +143,29 @@ io.on('connection', (socket) => {
     console.log(`[END] ${callId}`);
   });
 
-  // ── WebRTC OFFER ───────────────────────────────────────────────────────────
+  // ── WebRTC OFFER ──────────────────────────────────────────────────────────
   socket.on('offer', ({ callId, sdp }) => {
     const target = _getOtherSocket(callId, socket.id);
     if (target) io.to(target).emit('offer', { callId, sdp });
   });
 
-  // ── WebRTC ANSWER ──────────────────────────────────────────────────────────
+  // ── WebRTC ANSWER ─────────────────────────────────────────────────────────
   socket.on('answer', ({ callId, sdp }) => {
     const target = _getOtherSocket(callId, socket.id);
     if (target) io.to(target).emit('answer', { callId, sdp });
   });
 
-  // ── ICE CANDIDATE ──────────────────────────────────────────────────────────
+  // ── ICE CANDIDATE ─────────────────────────────────────────────────────────
   socket.on('ice_candidate', ({ callId, candidate }) => {
     const target = _getOtherSocket(callId, socket.id);
     if (target) io.to(target).emit('ice_candidate', { callId, candidate });
   });
 
-  // ── DISCONNECT ─────────────────────────────────────────────────────────────
-  socket.on('disconnect', () => {
+  // ── DISCONNECT ────────────────────────────────────────────────────────────
+  socket.on('disconnect', async () => {
     const username = socket.data.username;
     if (!username) return;
+
     for (const [callId, call] of activeCalls) {
       if (call.callerSocketId === socket.id || call.calleeSocketId === socket.id) {
         const other = call.callerSocketId === socket.id
@@ -137,9 +174,15 @@ io.on('connection', (socket) => {
         _endCall(callId);
       }
     }
+
     users.delete(username);
     broadcastUserList();
     console.log(`[-] Disconnected: ${username}`);
+
+    // Update lastSeen in MongoDB
+    try {
+      await User.findOneAndUpdate({ username }, { lastSeen: new Date() });
+    } catch (_) {}
   });
 });
 
@@ -158,6 +201,9 @@ function _endCall(callId) {
   broadcastUserList();
 }
 
+// ── REST API ──────────────────────────────────────────────────────────────────
+
+// Health / live status (unchanged)
 app.get('/health', (_, res) => {
   res.json({
     status: 'ok',
@@ -167,7 +213,30 @@ app.get('/health', (_, res) => {
   });
 });
 
+// All registered users from MongoDB
+app.get('/users', async (_, res) => {
+  try {
+    const all = await User.find({}, { __v: 0 }).sort({ lastSeen: -1 });
+    res.json(all);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete a user from MongoDB (admin / testing)
+app.delete('/users/:username', async (req, res) => {
+  try {
+    const result = await User.findOneAndDelete({ username: req.params.username });
+    if (!result) return res.status(404).json({ error: 'User not found' });
+    res.json({ deleted: result.username });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Start server ──────────────────────────────────────────────────────────────
 server.listen(PORT, () => {
   console.log(`SYNAPSE Signaling Server running on http://0.0.0.0:${PORT}`);
-  console.log(`Health check: http://localhost:${PORT}/health`);
+  console.log(`Health:  GET http://localhost:${PORT}/health`);
+  console.log(`Users:   GET http://localhost:${PORT}/users`);
 });
