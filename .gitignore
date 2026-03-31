@@ -4,3 +4,4 @@
 .claude
 node_modules
 .env
+/test/assets/models/*.onnx

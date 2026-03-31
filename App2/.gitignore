@@ -46,5 +46,4 @@ app.*.map.json
 
 # Large local model assets
 /assets/models/*.onnx
-
-
+/test/assets/models/*.onnx
