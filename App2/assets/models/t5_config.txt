@@ -1,0 +1,3 @@
+hidden_dim=768
+vocab_size=32100
+max_len=64

@@ -1,0 +1,20 @@
+Analyzing App2...
+
+  error - lib\providers\detection_provider.dart:149:7 - Undefined name 'HandCropService'. Try correcting the name to one that is defined, or defining the name. - undefined_identifier
+  error - lib\providers\detection_provider.dart:317:26 - Undefined name 'HandCropService'. Try correcting the name to one that is defined, or defining the name. - undefined_identifier
+  error - lib\providers\detection_provider.dart:477:7 - Undefined name '_lastClassifiedLandmarks'. Try correcting the name to one that is defined, or defining the name. - undefined_identifier
+  error - lib\providers\detection_provider.dart:478:7 - Undefined name '_skippedFrames'. Try correcting the name to one that is defined, or defining the name. - undefined_identifier
+  error - lib\providers\detection_provider.dart:579:30 - Undefined name 'HandCropService'. Try correcting the name to one that is defined, or defining the name. - undefined_identifier
+  error - lib\services\gesture_stabilizer.dart:42:32 - The getter 'stabilizerWindowSize' isn't defined for the type 'AppConfig'. Try importing the library that defines 'stabilizerWindowSize', correcting the name to the name of an existing getter, or defining a getter or field named 'stabilizerWindowSize'. - undefined_getter
+  error - lib\services\gesture_stabilizer.dart:43:37 - The getter 'stabilizerHysteresisCount' isn't defined for the type 'AppConfig'. Try importing the library that defines 'stabilizerHysteresisCount', correcting the name to the name of an existing getter, or defining a getter or field named 'stabilizerHysteresisCount'. - undefined_getter
+  error - lib\services\gesture_stabilizer.dart:44:32 - The getter 'stabilizerCooldownMs' isn't defined for the type 'AppConfig'. Try importing the library that defines 'stabilizerCooldownMs', correcting the name to the name of an existing getter, or defining a getter or field named 'stabilizerCooldownMs'. - undefined_getter
+  error - lib\services\gesture_stabilizer.dart:45:33 - The getter 'stabilizerEmaAlpha' isn't defined for the type 'AppConfig'. Try importing the library that defines 'stabilizerEmaAlpha', correcting the name to the name of an existing getter, or defining a getter or field named 'stabilizerEmaAlpha'. - undefined_getter
+  error - test\tutorial_repository_test.dart:74:13 - The argument type 'List<dynamic>' can't be assigned to the parameter type 'List<TutorialLesson>'.  - argument_type_not_assignable
+warning - lib\providers\detection_provider.dart:64:16 - The value of the field '_lastCameraImage' isn't used. Try removing the field, or using it. - unused_field
+warning - lib\providers\detection_provider.dart:65:14 - The value of the field '_lastPiJpeg' isn't used. Try removing the field, or using it. - unused_field
+warning - lib\services\hardware_service.dart:56:8 - The value of the field '_micRequested' isn't used. Try removing the field, or using it. - unused_field
+warning - lib\services\hardware_service.dart:207:40 - Unnecessary cast. Try removing the cast. - unnecessary_cast
+   info - lib\services\hardware_service.dart:2:8 - The import of 'dart:typed_data' is unnecessary because all of the used elements are also provided by the import of 'package:flutter/foundation.dart'. Try removing the import directive. - unnecessary_import
+   info - lib\services\system_audio_service.dart:2:8 - The import of 'package:flutter/foundation.dart' is unnecessary because all of the used elements are also provided by the import of 'package:flutter/services.dart'. Try removing the import directive. - unnecessary_import
+
+16 issues found.
