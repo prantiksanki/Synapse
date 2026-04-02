@@ -296,7 +296,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       trailing: Switch(
         value: value,
         onChanged: onChanged,
-        activeColor: AppConfig.obPrimary,
+        activeThumbColor: AppConfig.obPrimary,
         activeTrackColor: AppConfig.obBorder,
         inactiveThumbColor: AppConfig.obTextSecondary,
         inactiveTrackColor: AppConfig.obBorder,

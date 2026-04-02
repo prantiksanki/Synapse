@@ -41,11 +41,6 @@ class MainActivity : FlutterActivity() {
 
     private val MEDIA_PROJECTION_REQUEST = 1001
 
-    // Saved volume levels for mute/unmute
-    private var savedNotificationVolume = -1
-    private var savedSystemVolume       = -1
-    private var savedRingVolume         = -1
-
     // ── FlutterEngine setup ──────────────────────────────────────────────────
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -90,45 +85,16 @@ class MainActivity : FlutterActivity() {
             .setMethodCallHandler { call, result ->
                 when (call.method) {
                     "muteBeep" -> {
-                        savedNotificationVolume =
-                            audioManager.getStreamVolume(AudioManager.STREAM_NOTIFICATION)
-                        savedSystemVolume =
-                            audioManager.getStreamVolume(AudioManager.STREAM_SYSTEM)
-                        savedRingVolume =
-                            audioManager.getStreamVolume(AudioManager.STREAM_RING)
-                        audioManager.setStreamVolume(
-                            AudioManager.STREAM_NOTIFICATION, 0,
-                            AudioManager.FLAG_REMOVE_SOUND_AND_VIBRATE
-                        )
-                        audioManager.setStreamVolume(
-                            AudioManager.STREAM_SYSTEM, 0,
-                            AudioManager.FLAG_REMOVE_SOUND_AND_VIBRATE
-                        )
-                        audioManager.setStreamVolume(
-                            AudioManager.STREAM_RING, 0,
-                            AudioManager.FLAG_REMOVE_SOUND_AND_VIBRATE
-                        )
+                        // Do not change global device volumes here.
+                        // The previous implementation muted notification,
+                        // system, and ring streams, which could push the phone
+                        // into a silent/vibrate state just by opening the app.
                         result.success(null)
                     }
                     "unmuteBeep" -> {
-                        if (savedNotificationVolume >= 0) {
-                            audioManager.setStreamVolume(
-                                AudioManager.STREAM_NOTIFICATION, savedNotificationVolume, 0
-                            )
-                            savedNotificationVolume = -1
-                        }
-                        if (savedSystemVolume >= 0) {
-                            audioManager.setStreamVolume(
-                                AudioManager.STREAM_SYSTEM, savedSystemVolume, 0
-                            )
-                            savedSystemVolume = -1
-                        }
-                        if (savedRingVolume >= 0) {
-                            audioManager.setStreamVolume(
-                                AudioManager.STREAM_RING, savedRingVolume, 0
-                            )
-                            savedRingVolume = -1
-                        }
+                        // Intentionally a no-op for the same reason as
+                        // muteBeep: restoring global volumes is unsafe if the
+                        // user changed them while the app was active.
                         result.success(null)
                     }
                     else -> result.notImplemented()

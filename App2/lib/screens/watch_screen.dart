@@ -715,8 +715,8 @@ class _FullScreenVideo extends StatelessWidget {
       child: FittedBox(
         fit: BoxFit.cover,
         child: SizedBox(
-          width: controller!.value.size?.width ?? MediaQuery.of(context).size.width,
-          height: controller!.value.size?.height ?? MediaQuery.of(context).size.height,
+          width: controller!.value.size.width ?? MediaQuery.of(context).size.width,
+          height: controller!.value.size.height ?? MediaQuery.of(context).size.height,
           child: VideoPlayer(controller!),
         ),
       ),
