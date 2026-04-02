@@ -8,13 +8,23 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 try:
     import tensorflow as tf
 except Exception:  # pragma: no cover
     tf = None
+
+try:
+    import cv2
+except Exception:  # pragma: no cover
+    cv2 = None
+
+try:
+    import mediapipe as mp
+except Exception:  # pragma: no cover
+    mp = None
 
 
 HOST = os.environ.get("WS_BRIDGE_HOST", "0.0.0.0")
@@ -201,6 +211,51 @@ def _predict_from_features(features: list[float]) -> PredictionEvent | None:
     )
 
 
+def _landmarks_to_feature_vector(result: Any) -> list[float] | None:
+    hand_landmarks = getattr(result, "multi_hand_landmarks", None)
+    if not hand_landmarks:
+        return None
+
+    handedness = getattr(result, "multi_handedness", None) or []
+
+    left = np.zeros(63, dtype=np.float32)
+    right = np.zeros(63, dtype=np.float32)
+
+    for i, hand in enumerate(hand_landmarks):
+        if hand is None or len(getattr(hand, "landmark", [])) != 21:
+            continue
+
+        label = "Right"
+        if i < len(handedness) and handedness[i].classification:
+            label = handedness[i].classification[0].label or "Right"
+
+        wrist = hand.landmark[0]
+        coords = np.zeros(63, dtype=np.float32)
+        for j, point in enumerate(hand.landmark):
+            base = j * 3
+            coords[base] = float(point.x - wrist.x)
+            coords[base + 1] = float(point.y - wrist.y)
+            coords[base + 2] = float(point.z - wrist.z)
+
+        if label == "Left":
+            left = coords
+        else:
+            right = coords
+
+    has_left = bool(np.any(left))
+    has_right = bool(np.any(right))
+    if not has_left and not has_right:
+        return None
+
+    # Keep parity with browser path: if only one hand is present, map it to "left" slot.
+    if not has_left and has_right:
+        left = right
+        right = np.zeros(63, dtype=np.float32)
+
+    out = np.concatenate([left, right], axis=0)
+    return out.tolist()
+
+
 @app.on_event("startup")
 def _startup() -> None:
     _load_server_model()
@@ -231,6 +286,151 @@ def health() -> dict[str, Any]:
         "total_events": hub.total_events,
         "has_latest": hub.latest is not None,
     }
+
+
+@app.post("/predict_video")
+async def predict_video(
+    file: UploadFile = File(...),
+    frame_stride: int = 2,
+    min_confidence: float = 0.0,
+    only_predictions: bool = True,
+    max_frames: int = 0,
+) -> dict[str, Any]:
+    if not file.content_type or not file.content_type.startswith("video/"):
+        raise HTTPException(status_code=400, detail="Upload a video file.")
+    if frame_stride < 1 or frame_stride > 60:
+        raise HTTPException(status_code=400, detail="frame_stride must be between 1 and 60.")
+    if min_confidence < 0.0 or min_confidence > 1.0:
+        raise HTTPException(status_code=400, detail="min_confidence must be between 0 and 1.")
+    if max_frames < 0 or max_frames > 20000:
+        raise HTTPException(status_code=400, detail="max_frames must be between 0 and 20000.")
+
+    if not hub.server_infer_enabled:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Server inference unavailable: {hub.infer_error or 'unknown error'}",
+        )
+    if cv2 is None:
+        raise HTTPException(status_code=503, detail="OpenCV (cv2) is not installed.")
+    if mp is None:
+        raise HTTPException(status_code=503, detail="MediaPipe is not installed.")
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="The uploaded video file is empty.")
+
+    temp_path = BASE_DIR / f"__tmp_upload_{int(time.time() * 1000)}.mp4"
+    capture = None
+    try:
+        temp_path.write_bytes(data)
+        capture = cv2.VideoCapture(str(temp_path))
+        if not capture.isOpened():
+            raise HTTPException(status_code=400, detail="Could not open the uploaded video.")
+
+        fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
+        width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+
+        detector = mp.solutions.hands.Hands(
+            static_image_mode=False,
+            model_complexity=0,
+            max_num_hands=2,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5,
+        )
+
+        frames: list[dict[str, Any]] = []
+        frame_index = -1
+        processed = 0
+        predicted = 0
+        started = time.perf_counter()
+
+        try:
+            while True:
+                ok, frame = capture.read()
+                if not ok:
+                    break
+                frame_index += 1
+
+                if frame_index % frame_stride != 0:
+                    continue
+                if max_frames > 0 and processed >= max_frames:
+                    break
+
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                result = detector.process(rgb)
+                features = _landmarks_to_feature_vector(result)
+                timestamp_ms = (
+                    (1000.0 * frame_index / fps) if fps > 0 else (processed * 1000.0 / 30.0)
+                )
+
+                payload: dict[str, Any] = {
+                    "frame_index": frame_index,
+                    "timestamp_ms": round(timestamp_ms, 2),
+                    "hands": len(getattr(result, "multi_hand_landmarks", []) or []),
+                }
+
+                evt = _predict_from_features(features) if features is not None else None
+                if evt is not None and evt.confidence >= min_confidence:
+                    payload.update(
+                        {
+                            "label": evt.label,
+                            "confidence": round(float(evt.confidence), 6),
+                            "class_index": evt.class_index,
+                        }
+                    )
+                    predicted += 1
+
+                if (not only_predictions) or ("label" in payload):
+                    frames.append(payload)
+
+                processed += 1
+        finally:
+            detector.close()
+
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        best_label = ""
+        if frames:
+            counts: dict[str, int] = {}
+            for row in frames:
+                label = row.get("label")
+                if not label:
+                    continue
+                counts[label] = counts.get(label, 0) + 1
+            if counts:
+                best_label = max(counts.items(), key=lambda kv: kv[1])[0]
+
+        return {
+            "filename": file.filename,
+            "video_meta": {
+                "fps": round(fps, 3),
+                "frame_count": frame_count,
+                "width": width,
+                "height": height,
+            },
+            "params": {
+                "frame_stride": frame_stride,
+                "min_confidence": min_confidence,
+                "only_predictions": only_predictions,
+                "max_frames": max_frames,
+            },
+            "summary": {
+                "processed_frames": processed,
+                "returned_frames": len(frames),
+                "predicted_frames": predicted,
+                "top_label": best_label,
+                "elapsed_ms": round(elapsed_ms, 2),
+            },
+            "frames": frames,
+        }
+    finally:
+        if capture is not None:
+            capture.release()
+        try:
+            temp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 @app.get("/latest")

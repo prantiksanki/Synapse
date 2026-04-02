@@ -23,6 +23,21 @@ enum WatchModeState {
 
 enum WatchTranscriptSource { none, systemAudio, microphone }
 enum WatchConversionEngine { none, t5Offline, ruleGloss }
+enum WatchOutputPhase { idle, livePreview, checkpointConversion, noSpeechCheckpoint }
+
+class _TranscriptChunk {
+  final String text;
+  final bool isFinal;
+  final DateTime at;
+  final String source;
+
+  const _TranscriptChunk({
+    required this.text,
+    required this.isFinal,
+    required this.at,
+    required this.source,
+  });
+}
 
 /// Watch mode orchestration:
 /// 1) Video playback loop
@@ -38,7 +53,10 @@ class WatchModeProvider extends ChangeNotifier {
 
   VideoPlayerController? _videoController;
   Timer? _restartTimer;
+  Timer? _realtimeDebounceTimer;
+  Timer? _checkpointTimer;
   bool _restartPending = false;
+  bool _checkpointInFlight = false;
 
   bool _systemProjectionRequested = false;
   bool _usingSystemAudio = false;
@@ -49,7 +67,13 @@ class WatchModeProvider extends ChangeNotifier {
   bool _t5Ready = false;
   WatchTranscriptSource _lastSource = WatchTranscriptSource.none;
   WatchConversionEngine _lastEngine = WatchConversionEngine.none;
+  WatchOutputPhase _outputPhase = WatchOutputPhase.idle;
   String _lastGloss = '';
+  String _lastBufferedText = '';
+  String _lastRealtimeSignature = '';
+  String _lastPublishedGloss = '';
+  DateTime _lastCheckpointAt = DateTime.now();
+  final List<_TranscriptChunk> _transcriptBuffer = <_TranscriptChunk>[];
 
   WatchModeState _state = WatchModeState.idle;
   String _statusMessage = '';
@@ -65,7 +89,11 @@ class WatchModeProvider extends ChangeNotifier {
   bool get isPlaying => _state == WatchModeState.playing;
   WatchTranscriptSource get transcriptSource => _lastSource;
   WatchConversionEngine get conversionEngine => _lastEngine;
+  WatchOutputPhase get outputPhase => _outputPhase;
   String get lastGloss => _lastGloss;
+  bool get isCheckpointAnalyzing =>
+      _outputPhase == WatchOutputPhase.checkpointConversion &&
+      _statusMessage == 'Analyzing last 10s...';
 
   String get transcriptSourceLabel => switch (_lastSource) {
         WatchTranscriptSource.systemAudio => 'System Audio',
@@ -77,6 +105,13 @@ class WatchModeProvider extends ChangeNotifier {
         WatchConversionEngine.t5Offline => 'T5 Offline',
         WatchConversionEngine.ruleGloss => 'Rule Gloss',
         WatchConversionEngine.none => 'No Engine',
+      };
+
+  String get outputPhaseLabel => switch (_outputPhase) {
+        WatchOutputPhase.livePreview => 'Live sign preview',
+        WatchOutputPhase.checkpointConversion => '10s checkpoint conversion',
+        WatchOutputPhase.noSpeechCheckpoint => 'No speech checkpoint',
+        WatchOutputPhase.idle => 'Idle',
       };
 
   Future<void> initialize() async {
@@ -174,34 +209,58 @@ class WatchModeProvider extends ChangeNotifier {
   Future<void> startPlaying() async {
     if (_state == WatchModeState.playing) return;
     _restartTimer?.cancel();
+    _realtimeDebounceTimer?.cancel();
+    _checkpointTimer?.cancel();
     _restartPending = false;
+    _checkpointInFlight = false;
     await _videoController?.play();
     _segments = [];
     _rawTranscript = '';
+    _lastGloss = '';
+    _lastPublishedGloss = '';
+    _lastRealtimeSignature = '';
+    _lastBufferedText = '';
+    _transcriptBuffer.clear();
+    _lastCheckpointAt = DateTime.now();
+    _outputPhase = WatchOutputPhase.idle;
     _setState(WatchModeState.playing, 'Ready - listening for video/audio...');
+    _startCheckpointTimer();
     await _ensureListeningPipeline();
   }
 
   Future<void> pausePlaying() async {
     if (_state != WatchModeState.playing && _state != WatchModeState.listening) return;
     _restartTimer?.cancel();
+    _realtimeDebounceTimer?.cancel();
+    _checkpointTimer?.cancel();
     _restartPending = false;
+    _checkpointInFlight = false;
     await _videoController?.pause();
     await _speechService.stopListening();
     await _systemAudioService.stopCapture();
     _usingSystemAudio = false;
+    _outputPhase = WatchOutputPhase.idle;
     _setState(WatchModeState.paused, 'Paused');
   }
 
   Future<void> stopPlaying() async {
     _restartTimer?.cancel();
+    _realtimeDebounceTimer?.cancel();
+    _checkpointTimer?.cancel();
     _restartPending = false;
+    _checkpointInFlight = false;
     await _speechService.stopListening();
     await _systemAudioService.stopCapture();
     _usingSystemAudio = false;
     await _videoController?.pause();
     _segments = [];
     _rawTranscript = '';
+    _lastGloss = '';
+    _lastPublishedGloss = '';
+    _lastRealtimeSignature = '';
+    _lastBufferedText = '';
+    _transcriptBuffer.clear();
+    _outputPhase = WatchOutputPhase.idle;
     _setState(WatchModeState.idle, '');
   }
 
@@ -300,22 +359,40 @@ class WatchModeProvider extends ChangeNotifier {
   }
 
   void _onTranscript(String text, bool isFinal, {required String source}) {
-    _rawTranscript = text;
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) return;
 
-    if (!isFinal) {
-      _lastSource = source == 'system'
-          ? WatchTranscriptSource.systemAudio
-          : WatchTranscriptSource.microphone;
-      _setState(WatchModeState.listening,
-          source == 'system' ? 'Listening (system audio)...' : 'Listening (microphone)...');
-      return;
+    final now = DateTime.now();
+    _rawTranscript = trimmed;
+    _lastSource = source == 'system'
+        ? WatchTranscriptSource.systemAudio
+        : WatchTranscriptSource.microphone;
+
+    _pruneTranscriptBuffer(now);
+    if (trimmed != _lastBufferedText) {
+      _transcriptBuffer.add(
+        _TranscriptChunk(
+          text: trimmed,
+          isFinal: isFinal,
+          at: now,
+          source: source,
+        ),
+      );
+      _lastBufferedText = trimmed;
     }
 
-    _setState(WatchModeState.playing, 'Converting to sign sequence...');
-    unawaited(_buildSignSequence(text, source: source));
+    _setState(
+      WatchModeState.listening,
+      source == 'system' ? 'Listening (system audio)...' : 'Listening (microphone)...',
+    );
+    _scheduleRealtimeConversion();
   }
 
-  Future<void> _buildSignSequence(String text, {required String source}) async {
+  Future<void> _buildSignSequence(
+    String text, {
+    required WatchOutputPhase phase,
+    required String statusMessage,
+  }) async {
     final trimmed = text.trim();
     if (trimmed.isEmpty) return;
 
@@ -338,10 +415,111 @@ class WatchModeProvider extends ChangeNotifier {
     }
 
     final gloss = _toAslGloss(normalized);
+    if (gloss.isEmpty) return;
+
+    if (phase == WatchOutputPhase.livePreview && gloss == _lastPublishedGloss) {
+      return;
+    }
+
     _lastGloss = gloss;
     _segments = _signImageService.textToSegments(gloss);
-    _setState(WatchModeState.playing,
-        'Showing sign sequence (${source == 'system' ? 'system audio' : 'mic'})');
+    _lastPublishedGloss = gloss;
+    _outputPhase = phase;
+    _setState(WatchModeState.playing, statusMessage);
+  }
+
+  void _scheduleRealtimeConversion() {
+    _realtimeDebounceTimer?.cancel();
+    _realtimeDebounceTimer = Timer(
+      const Duration(milliseconds: AppConfig.watchRealtimeDebounceMs),
+      () => unawaited(_runRealtimeConversion()),
+    );
+  }
+
+  Future<void> _runRealtimeConversion() async {
+    if (_state != WatchModeState.playing && _state != WatchModeState.listening) return;
+    if (_checkpointInFlight) return;
+
+    final sourceText = _rawTranscript.trim();
+    if (sourceText.length < AppConfig.watchMinTranscriptChars) return;
+
+    final signature = sourceText.toUpperCase();
+    if (signature == _lastRealtimeSignature) return;
+    _lastRealtimeSignature = signature;
+
+    await _buildSignSequence(
+      sourceText,
+      phase: WatchOutputPhase.livePreview,
+      statusMessage: 'Live sign preview',
+    );
+  }
+
+  void _startCheckpointTimer() {
+    _checkpointTimer?.cancel();
+    _checkpointTimer = Timer.periodic(
+      const Duration(seconds: AppConfig.watchCheckpointSeconds),
+      (_) => unawaited(_runCheckpointConversion()),
+    );
+  }
+
+  Future<void> _runCheckpointConversion() async {
+    if (_checkpointInFlight) return;
+    if (_state != WatchModeState.playing && _state != WatchModeState.listening) return;
+
+    _checkpointInFlight = true;
+    final now = DateTime.now();
+    try {
+      final windowText = _checkpointWindowText(now);
+      _lastCheckpointAt = now;
+
+      if (windowText.length < AppConfig.watchMinTranscriptChars) {
+        _outputPhase = WatchOutputPhase.noSpeechCheckpoint;
+        _setState(WatchModeState.playing, 'No capturable speech in last 10s');
+        return;
+      }
+
+      _outputPhase = WatchOutputPhase.checkpointConversion;
+      _setState(WatchModeState.playing, 'Analyzing last 10s...');
+      await _videoController?.pause();
+
+      await _buildSignSequence(
+        windowText,
+        phase: WatchOutputPhase.checkpointConversion,
+        statusMessage: '10s checkpoint conversion',
+      );
+
+      await Future<void>.delayed(
+        const Duration(milliseconds: AppConfig.watchCheckpointPauseMs),
+      );
+      await _videoController?.play();
+      await _ensureListeningPipeline();
+    } finally {
+      _checkpointInFlight = false;
+      _pruneTranscriptBuffer(DateTime.now());
+    }
+  }
+
+  String _checkpointWindowText(DateTime now) {
+    final start = _lastCheckpointAt;
+    final parts = <String>[];
+    String previous = '';
+
+    for (final chunk in _transcriptBuffer) {
+      if (chunk.at.isBefore(start) || chunk.at.isAfter(now)) continue;
+      final t = chunk.text.trim();
+      if (t.isEmpty) continue;
+      if (t == previous) continue;
+      parts.add(t);
+      previous = t;
+    }
+    return parts.join(' ').replaceAll(RegExp(r'\s+'), ' ').trim();
+  }
+
+  void _pruneTranscriptBuffer(DateTime now) {
+    final cutoff = now.subtract(
+      const Duration(seconds: AppConfig.watchCheckpointSeconds * 3),
+    );
+    _transcriptBuffer.removeWhere((chunk) => chunk.at.isBefore(cutoff));
   }
 
   String _toAslGloss(String transcript) {
@@ -416,6 +594,8 @@ class WatchModeProvider extends ChangeNotifier {
   void dispose() {
     _videoController?.removeListener(_onVideoTick);
     _restartTimer?.cancel();
+    _realtimeDebounceTimer?.cancel();
+    _checkpointTimer?.cancel();
     _speechService.dispose();
     _systemAudioService.dispose();
     _signImageService.dispose();

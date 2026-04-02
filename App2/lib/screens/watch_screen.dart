@@ -353,6 +353,8 @@ class _BottomMeta extends StatelessWidget {
           String sourceLabel,
           String engineLabel,
           String gloss,
+          String outputPhaseLabel,
+          bool isCheckpointAnalyzing,
         })>(
       selector: (_, w) => (
         transcript: w.rawTranscript,
@@ -361,6 +363,8 @@ class _BottomMeta extends StatelessWidget {
         sourceLabel: w.transcriptSourceLabel,
         engineLabel: w.conversionEngineLabel,
         gloss: w.lastGloss,
+        outputPhaseLabel: w.outputPhaseLabel,
+        isCheckpointAnalyzing: w.isCheckpointAnalyzing,
       ),
       builder: (_, data, __) => Column(
         mainAxisSize: MainAxisSize.min,
@@ -414,8 +418,24 @@ class _BottomMeta extends StatelessWidget {
                 icon: Icons.memory_rounded,
                 label: data.engineLabel,
               ),
+              _MetaBadge(
+                icon: Icons.sync_alt_rounded,
+                label: data.outputPhaseLabel,
+              ),
             ],
           ),
+          if (data.isCheckpointAnalyzing)
+            const Padding(
+              padding: EdgeInsets.only(top: 8),
+              child: Text(
+                'Analyzing last 10s...',
+                style: TextStyle(
+                  color: Colors.white70,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
           const SizedBox(height: 8),
           _StatusChip(state: data.state, message: data.message),
         ],
@@ -713,6 +733,11 @@ class _StatusChip extends StatelessWidget {
   const _StatusChip({required this.state, required this.message});
 
   Color _color() {
+    if (message == 'Live sign preview') return const Color(0xFF42A5F5);
+    if (message == '10s checkpoint conversion') return const Color(0xFFFFB300);
+    if (message == 'Analyzing last 10s...') return const Color(0xFFFFB300);
+    if (message == 'No capturable speech in last 10s') return const Color(0xFFFF7043);
+
     switch (state) {
       case WatchModeState.playing:
         if (message.contains('Converting')) return const Color(0xFFAB47BC);

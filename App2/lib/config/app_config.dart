@@ -32,6 +32,10 @@ class AppConfig {
   static const bool strictOfflineMode = true;
   static const bool watchOfflineOnly = true;
   static const bool watchPreferSystemAudio = true;
+  static const int watchRealtimeDebounceMs = 1000;
+  static const int watchCheckpointSeconds = 10;
+  static const int watchCheckpointPauseMs = 1800;
+  static const int watchMinTranscriptChars = 3;
 
   // T5 grammar model downloaded on first launch from Hugging Face.
   static const String _hfBase =

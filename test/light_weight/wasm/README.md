@@ -70,6 +70,7 @@ Endpoints:
 - Subscribe stream: `ws://127.0.0.1:8787/ws/stream`
 - Latest prediction over HTTP: `http://127.0.0.1:8787/latest`
 - Health: `http://127.0.0.1:8787/health`
+- Video upload inference: `POST http://127.0.0.1:8787/predict_video`
 
 Recommended flow:
 
@@ -78,6 +79,23 @@ Recommended flow:
 3. Open `http://127.0.0.1:8080/light_weight/wasm/web/`
 4. In page, set WS URL to `ws://127.0.0.1:8787/ws/sign` and connect
 5. Flutter can read `GET /latest` or subscribe to `ws://127.0.0.1:8787/ws/stream`
+
+## 5) Video file -> hand sign result (new)
+
+You can now upload a saved video file and get per-frame sign predictions.
+
+Example:
+
+```powershell
+curl -X POST "http://127.0.0.1:8787/predict_video?frame_stride=2&min_confidence=0.5&only_predictions=true" `
+  -H "accept: application/json" `
+  -F "file=@C:\path\to\your\video.mp4"
+```
+
+Response includes:
+
+- `summary.top_label`: most frequent sign in the video
+- `frames[]`: per-frame predictions (`label`, `confidence`, `timestamp_ms`)
 
 ## Notes
 
