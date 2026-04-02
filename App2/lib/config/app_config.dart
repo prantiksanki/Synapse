@@ -13,17 +13,20 @@ class AppConfig {
   static const String appTitle = 'VAANI';
 
   static const double gestureConfidenceThreshold = 0.50;
-  static const Duration gestureStabilizationDelay = Duration(seconds: 2);
 
-  // Keep duplicate suppression short so letter streaming feels responsive.
-  static const Duration duplicateSuppression = Duration(milliseconds: 700);
+  // Keep a short per-label debounce, then enforce a hard cooldown between
+  // accepted symbols so transition handshapes do not get committed as letters.
+  static const Duration gestureStabilizationDelay = Duration(milliseconds: 500);
+  static const Duration gestureTransitionDelay = Duration(seconds: 1);
+  static const Duration duplicateSuppression = Duration(seconds: 1);
 
   // Commit quickly after hand pause for near-instant phrase generation/speech.
   static const Duration noHandSentenceTrigger = Duration(milliseconds: 1200);
 
   // OpenRouter LLM
   static const String openRouterModel = 'qwen/qwen3-8b';
-  static const String openRouterUrl = 'https://openrouter.ai/api/v1/chat/completions';
+  static const String openRouterUrl =
+      'https://openrouter.ai/api/v1/chat/completions';
   static const int openRouterTimeoutMs = 5000;
   static const bool preferCloudSentenceGeneration = true;
   static const int cloudSentenceMaxWaitMs = 2200;
@@ -64,7 +67,8 @@ class AppConfig {
   // Speech / sign-image mode
   static const Duration handAbsenceThreshold = Duration(milliseconds: 1500);
   static const Duration speechRestartDelay = Duration(milliseconds: 300);
-  static const String signImageManifestPath = 'assets/sign_images/manifest.json';
+  static const String signImageManifestPath =
+      'assets/sign_images/manifest.json';
   static const double signImageTileSize = 64.0;
   static const double wordSpaceWidth = 20.0;
 
@@ -74,7 +78,8 @@ class AppConfig {
   static const Duration callTtsDelay = Duration(milliseconds: 500);
 
   // WebRTC calling system
-  static const String webrtcBackendUrl = 'https://synapse-backend-wmmy.onrender.com';
+  static const String webrtcBackendUrl =
+      'https://synapse-backend-wmmy.onrender.com';
   static const Map<String, dynamic> webrtcIceServers = {
     'iceServers': [
       {'urls': 'stun:stun.l.google.com:19302'},
@@ -82,5 +87,3 @@ class AppConfig {
     ],
   };
 }
-
-

@@ -8,6 +8,7 @@ import '../models/hand_landmark.dart';
 import '../models/llm_generation_result.dart';
 import '../models/word_buffer_state.dart';
 import '../services/camera_service.dart';
+import '../services/gesture_transition_service.dart';
 import '../services/hand_landmark_service.dart';
 import '../services/hardware_service.dart';
 import '../services/openrouter_service.dart';
@@ -36,6 +37,8 @@ class DetectionProvider extends ChangeNotifier {
   final HandLandmarkService _handLandmarkService = HandLandmarkService();
   final TfliteClassifier _tfliteClassifier = TfliteClassifier();
   final WordBufferService _wordBufferService = WordBufferService();
+  final GestureTransitionService _gestureTransitionService =
+      GestureTransitionService();
   final T5GrammarService _grammarService = T5GrammarService();
   final T5ModelDownloader _downloader = T5ModelDownloader();
   final TtsService _ttsService = TtsService();
@@ -65,8 +68,6 @@ class DetectionProvider extends ChangeNotifier {
 
   // Rule-based classification state
   DateTime? _lastLetterAcceptedAt;
-  GestureResult? _pendingGesture;
-  DateTime? _pendingGestureSince;
   Timer? _noHandTimer;
 
   Timer? _sttRestartDebounce;
@@ -305,12 +306,17 @@ class DetectionProvider extends ChangeNotifier {
         probabilities: classResult.probabilities,
         timestampMs: now.millisecondsSinceEpoch,
       );
-      final stableGesture = _tryAcceptStableGesture(candidate: candidate, now: now);
+      final stableGesture = _tryAcceptStableGesture(
+        candidate: candidate,
+        now: now,
+      );
       if (stableGesture == null) return;
 
       final isSame = _currentGesture?.label == stableGesture.label;
-      final inWindow = _lastLetterAcceptedAt != null &&
-          now.difference(_lastLetterAcceptedAt!) < AppConfig.duplicateSuppression;
+      final inWindow =
+          _lastLetterAcceptedAt != null &&
+          now.difference(_lastLetterAcceptedAt!) <
+              AppConfig.duplicateSuppression;
 
       if (!(isSame && inWindow)) {
         // Accept this letter
@@ -329,7 +335,9 @@ class DetectionProvider extends ChangeNotifier {
 
   void _scheduleNoHandTrigger() {
     if (_noHandTimer != null) return; // already armed
-    if (_wordBufferService.state.activeTokens.isEmpty) return; // nothing to commit
+    if (_wordBufferService.state.activeTokens.isEmpty) {
+      return; // nothing to commit
+    }
     _noHandTimer = Timer(AppConfig.noHandSentenceTrigger, () {
       _noHandTimer = null;
       final phrase = _wordBufferService.forceCommit();
@@ -369,7 +377,8 @@ class DetectionProvider extends ChangeNotifier {
     _isGeneratingSentence = true;
     notifyListeners();
 
-    if (AppConfig.preferCloudSentenceGeneration && !AppConfig.strictOfflineMode) {
+    if (AppConfig.preferCloudSentenceGeneration &&
+        !AppConfig.strictOfflineMode) {
       try {
         final result = await _openRouterService
             .formSentence(phrase)
@@ -377,8 +386,9 @@ class DetectionProvider extends ChangeNotifier {
         if (requestId != _generationRequestId) return;
 
         final cloudText = result.sentence.trim();
-        final finalText =
-            cloudText.isNotEmpty ? cloudText : _quickComposeFromLetters(phrase);
+        final finalText = cloudText.isNotEmpty
+            ? cloudText
+            : _quickComposeFromLetters(phrase);
 
         _generationResult = cloudText.isNotEmpty
             ? result
@@ -502,13 +512,15 @@ class DetectionProvider extends ChangeNotifier {
     _speechListenStatus = SpeechListenStatus.idle;
     _cancelNoHandTimer();
     if (_state == DetectionState.detecting) {
-      unawaited(_cameraService.stopImageStream().then((_) {
-        _state = DetectionState.ready;
-        _currentLandmarks = null;
-        _currentGesture = null;
-        _handIsPresent = false;
-        notifyListeners();
-      }));
+      unawaited(
+        _cameraService.stopImageStream().then((_) {
+          _state = DetectionState.ready;
+          _currentLandmarks = null;
+          _currentGesture = null;
+          _handIsPresent = false;
+          notifyListeners();
+        }),
+      );
     } else {
       notifyListeners();
     }
@@ -648,15 +660,20 @@ class DetectionProvider extends ChangeNotifier {
         probabilities: classResult.probabilities,
         timestampMs: now.millisecondsSinceEpoch,
       );
-      final stableGesture = _tryAcceptStableGesture(candidate: candidate, now: now);
+      final stableGesture = _tryAcceptStableGesture(
+        candidate: candidate,
+        now: now,
+      );
       if (stableGesture == null) {
         notifyListeners();
         return;
       }
 
       final isSame = _currentGesture?.label == stableGesture.label;
-      final inWindow = _lastLetterAcceptedAt != null &&
-          now.difference(_lastLetterAcceptedAt!) < AppConfig.duplicateSuppression;
+      final inWindow =
+          _lastLetterAcceptedAt != null &&
+          now.difference(_lastLetterAcceptedAt!) <
+              AppConfig.duplicateSuppression;
 
       if (!(isSame && inWindow)) {
         _lastLetterAcceptedAt = now;
@@ -672,34 +689,19 @@ class DetectionProvider extends ChangeNotifier {
   }
 
   void _clearPendingGesture() {
-    _pendingGesture = null;
-    _pendingGestureSince = null;
+    _gestureTransitionService.reset();
   }
 
   GestureResult? _tryAcceptStableGesture({
     required GestureResult candidate,
     required DateTime now,
   }) {
-    final currentLabel = _currentGesture?.label;
-    if (currentLabel == candidate.label) {
-      _clearPendingGesture();
-      return candidate;
-    }
-
-    if (_pendingGesture == null || _pendingGesture!.label != candidate.label) {
-      _pendingGesture = candidate;
-      _pendingGestureSince = now;
-      return null;
-    }
-
-    _pendingGesture = candidate;
-    final pendingSince = _pendingGestureSince ?? now;
-    if (now.difference(pendingSince) >= AppConfig.gestureStabilizationDelay) {
-      _clearPendingGesture();
-      return candidate;
-    }
-
-    return null;
+    return _gestureTransitionService.acceptStableGesture(
+      candidate: candidate,
+      currentLabel: _currentGesture?.label,
+      now: now,
+      lastAcceptedAt: _lastLetterAcceptedAt,
+    );
   }
 
   // ── Dispose ──────────────────────────────────────────────────────────────────

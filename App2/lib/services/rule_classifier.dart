@@ -234,7 +234,7 @@ String? _classifyAlphabet(List<List<double>> c) {
   final allFingersCurled = !s[1] && !s[2] && !s[3] && !s[4];
   final rightHand = _isRightHand(c);
 
-  bool _thumbLeftOfIndex() {
+  bool thumbLeftOfIndex() {
     return rightHand
         ? c[_thumbTip][0] < c[_indexMcp][0]
         : c[_thumbTip][0] > c[_indexMcp][0];
@@ -313,7 +313,7 @@ String? _classifyAlphabet(List<List<double>> c) {
   }
 
   if (allFingersCurled) {
-    if (s[0] && _thumbLeftOfIndex()) return 'A';
+    if (s[0] && thumbLeftOfIndex()) return 'A';
     if (s[0] && _distance(c[_thumbTip], c[_indexPip]) < 0.06) return 'S';
     if (thumbIndexDist > 0.10 && thumbIndexDist < 0.25 &&
         _distance(c[_thumbTip], c[_pinkyTip]) > 0.15) {
@@ -327,14 +327,20 @@ String? _classifyAlphabet(List<List<double>> c) {
     final tx = c[_thumbTip][0];
     if (rightHand
         ? (c[_indexMcp][0] < tx && tx < c[_middleMcp][0])
-        : (c[_middleMcp][0] < tx && tx < c[_indexMcp][0])) return 'T';
+        : (c[_middleMcp][0] < tx && tx < c[_indexMcp][0])) {
+      return 'T';
+    }
 
     if (rightHand ? c[_thumbTip][0] > c[_pinkyMcp][0] :
-        c[_thumbTip][0] < c[_pinkyMcp][0]) return 'M';
+        c[_thumbTip][0] < c[_pinkyMcp][0]) {
+      return 'M';
+    }
 
     if (rightHand
         ? (c[_middleMcp][0] < tx && tx < c[_ringMcp][0])
-        : (c[_ringMcp][0] < tx && tx < c[_middleMcp][0])) return 'N';
+        : (c[_ringMcp][0] < tx && tx < c[_middleMcp][0])) {
+      return 'N';
+    }
 
     return 'E';
   }
