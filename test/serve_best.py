@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import os
+import tempfile
+import time
 from contextlib import asynccontextmanager
 from io import BytesIO
 from pathlib import Path
 from threading import Lock
 from typing import Any
 
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+import cv2
+import numpy as np
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
 from PIL import Image, UnidentifiedImageError
 from ultralytics import YOLO
 
@@ -86,6 +90,22 @@ def serialize_result(result: Any) -> dict[str, Any]:
     }
 
 
+def serialize_frame_result(
+    result: Any,
+    *,
+    frame_index: int,
+    timestamp_ms: float,
+) -> dict[str, Any]:
+    serialized = serialize_result(result)
+    return {
+        "frame_index": frame_index,
+        "timestamp_ms": round(float(timestamp_ms), 2),
+        "count": serialized["count"],
+        "detections": serialized["detections"],
+        "image_shape": serialized["image_shape"],
+    }
+
+
 @app.get("/")
 def root() -> dict[str, Any]:
     model = get_model()
@@ -95,7 +115,9 @@ def root() -> dict[str, Any]:
         "class_count": len(model.names),
         "endpoints": {
             "health": "/health",
-            "predict": "/predict",
+            "predict_image": "/predict",
+            "predict_video": "/predict_video",
+            "predict_realtime_ws": "/ws/predict_realtime",
         },
     }
 
@@ -145,6 +167,176 @@ async def predict(
         "detections": serialized["detections"],
         "image_shape": serialized["image_shape"],
     }
+
+
+@app.post("/predict_video")
+async def predict_video(
+    file: UploadFile = File(...),
+    conf: float = Query(DEFAULT_CONFIDENCE, ge=0.0, le=1.0),
+    imgsz: int = Query(DEFAULT_IMGSZ, ge=32, le=2048),
+    frame_stride: int = Query(1, ge=1, le=60),
+    only_detections: bool = Query(False),
+    max_frames: int = Query(0, ge=0, le=20000),
+) -> dict[str, Any]:
+    """
+    Batch video inference (frame-by-frame).
+    Upload a video and receive detections for each sampled frame.
+    """
+    if not file.content_type or not file.content_type.startswith("video/"):
+        raise HTTPException(status_code=400, detail="Upload a video file.")
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="The uploaded video file is empty.")
+
+    suffix = Path(file.filename or "upload.mp4").suffix or ".mp4"
+    temp_path: Path | None = None
+    capture = None
+    model = get_model()
+
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(data)
+            temp_path = Path(tmp.name)
+
+        capture = cv2.VideoCapture(str(temp_path))
+        if not capture.isOpened():
+            raise HTTPException(status_code=400, detail="Could not open the uploaded video.")
+
+        fps = capture.get(cv2.CAP_PROP_FPS) or 0.0
+        width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+
+        frames: list[dict[str, Any]] = []
+        frame_index = -1
+        processed = 0
+        started = time.perf_counter()
+
+        while True:
+            ok, frame = capture.read()
+            if not ok:
+                break
+            frame_index += 1
+
+            if frame_index % frame_stride != 0:
+                continue
+            if max_frames > 0 and processed >= max_frames:
+                break
+
+            results = model.predict(source=frame, conf=conf, imgsz=imgsz, verbose=False)
+            if not results:
+                continue
+
+            timestamp_ms = (1000.0 * frame_index / fps) if fps > 0 else (processed * 1000.0 / 30.0)
+            frame_payload = serialize_frame_result(
+                results[0],
+                frame_index=frame_index,
+                timestamp_ms=timestamp_ms,
+            )
+            if (not only_detections) or frame_payload["count"] > 0:
+                frames.append(frame_payload)
+            processed += 1
+
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        total_detections = sum(f["count"] for f in frames)
+
+        return {
+            "filename": file.filename,
+            "video_meta": {
+                "fps": round(float(fps), 3),
+                "frame_count": frame_count,
+                "width": width,
+                "height": height,
+            },
+            "params": {
+                "conf": conf,
+                "imgsz": imgsz,
+                "frame_stride": frame_stride,
+                "only_detections": only_detections,
+                "max_frames": max_frames,
+            },
+            "summary": {
+                "processed_frames": processed,
+                "returned_frames": len(frames),
+                "total_detections": total_detections,
+                "elapsed_ms": round(elapsed_ms, 2),
+            },
+            "frames": frames,
+        }
+    finally:
+        if capture is not None:
+            capture.release()
+        if temp_path is not None:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
+@app.websocket("/ws/predict_realtime")
+async def predict_realtime(websocket: WebSocket):
+    """
+    Real-time inference socket.
+    Client sends JPEG/PNG frame bytes; server responds with one JSON prediction per frame.
+    """
+    await websocket.accept()
+    model = get_model()
+    frame_index = 0
+
+    try:
+        while True:
+            message = await websocket.receive()
+
+            if message.get("type") == "websocket.disconnect":
+                break
+
+            frame_bytes = message.get("bytes")
+            if not frame_bytes:
+                # Ignore non-binary messages to keep the socket simple and robust.
+                continue
+
+            np_buf = np.frombuffer(frame_bytes, dtype=np.uint8)
+            frame = cv2.imdecode(np_buf, cv2.IMREAD_COLOR)
+            if frame is None:
+                await websocket.send_json(
+                    {
+                        "event": "error",
+                        "frame_index": frame_index,
+                        "message": "Could not decode frame bytes as an image.",
+                    }
+                )
+                continue
+
+            results = model.predict(source=frame, conf=DEFAULT_CONFIDENCE, imgsz=DEFAULT_IMGSZ, verbose=False)
+            if not results:
+                await websocket.send_json(
+                    {
+                        "event": "prediction",
+                        "frame_index": frame_index,
+                        "timestamp_ms": round(time.time() * 1000.0, 2),
+                        "count": 0,
+                        "detections": [],
+                    }
+                )
+                frame_index += 1
+                continue
+
+            payload = serialize_frame_result(
+                results[0],
+                frame_index=frame_index,
+                timestamp_ms=time.time() * 1000.0,
+            )
+            payload["event"] = "prediction"
+            await websocket.send_json(payload)
+            frame_index += 1
+    except WebSocketDisconnect:
+        return
+    except Exception as exc:
+        try:
+            await websocket.send_json({"event": "error", "message": str(exc)})
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
