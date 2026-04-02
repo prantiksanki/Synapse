@@ -1,20 +1,24 @@
-import 'dart:async';
+﻿import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
-import 'package:http/http.dart' as http;
+import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:socket_io_client/socket_io_client.dart' as socket_io;
 
 import '../config/app_config.dart';
 import '../models/connection_state.dart';
 import '../models/hw_info.dart';
 
-/// Ultra-low-latency hardware service.
+/// SYNAPSE Hardware Service - WebRTC edition aligned with `files/server.py`.
 ///
-/// Video  → raw MJPEG over HTTP  (no Socket.IO overhead per frame)
-/// Audio  → Socket.IO binary     (tight 16 ms chunks)
-/// Control→ Socket.IO events
+/// Socket.IO is used only for signalling and health events:
+///   offer/answer/ice_candidate, hw_info, ping_hw/pong_hw, hw_error.
+///
+/// WebRTC carries media + data:
+///   Pi -> App: camera video + mic audio
+///   App -> Pi: phone mic audio + DataChannel('screen') text
 class HardwareService {
   static HardwareService? _instance;
 
@@ -25,46 +29,35 @@ class HardwareService {
 
   HardwareService._internal();
 
-  // ── Socket.IO (control + audio) ──────────────────────────────────────────
   socket_io.Socket? _socket;
   Timer? _retryTimer;
-  Timer? _connectTimer;
   Timer? _pingTimer;
   int _pingTimestamp = 0;
   Duration _retryDelay = const Duration(seconds: 3);
   static const Duration _maxRetryDelay = Duration(seconds: 30);
-
-  // ── MJPEG (video) ─────────────────────────────────────────────────────────
-  http.Client? _mjpegClient;
-  StreamSubscription<List<int>>? _mjpegSub;
-  String? _mjpegUrl;                    // filled from hw_info handshake
-  final _mjpegBuffer = <int>[];
-  bool _mjpegRunning = false;
-
-  // ── Connectivity ──────────────────────────────────────────────────────────
   StreamSubscription<List<ConnectivityResult>>? _connectivitySub;
 
-  // ── Public state ──────────────────────────────────────────────────────────
-  final ValueNotifier<HwStatus> status =
-      ValueNotifier(const HwStatus.disconnected());
+  RTCPeerConnection? _pc;
+  RTCDataChannel? _screenChannel;
+  MediaStream? _localStream;
 
+  /// Pi camera renderer target for WebRTC UI screens.
+  final RTCVideoRenderer remoteVideoRenderer = RTCVideoRenderer();
+  bool _rendererInitialized = false;
+
+  /// Legacy compatibility shims. These are intentionally unused in WebRTC mode.
   void Function(Uint8List jpeg)? onFrame;
   void Function(Uint8List pcm)? onAudio;
 
+  final ValueNotifier<HwStatus> status =
+      ValueNotifier(const HwStatus.disconnected());
+
   bool _disposed = false;
   bool _connecting = false;
-  bool _micRequested = false;
-
-  // ── MJPEG boundary markers ─────────────────────────────────────────────────
-  static const List<int> _boundaryBytes = [0xFF, 0xD8];   // JPEG SOI
-  static const List<int> _eoi           = [0xFF, 0xD9];   // JPEG EOI
-
-  // =========================================================================
-  // Connection lifecycle
-  // =========================================================================
 
   Future<void> connect() async {
-    if (_disposed || _connecting || _socket?.connected == true) return;
+    if (_disposed) return;
+    await _ensureRendererInit();
 
     _connectivitySub ??=
         Connectivity().onConnectivityChanged.listen(_onConnectivityChanged);
@@ -77,150 +70,148 @@ class HardwareService {
     }
   }
 
+  /// Send text to Pi HDMI display via WebRTC data channel "screen".
+  void updateScreen({String top = '', String mid = '', String bot = ''}) {
+    final payload = jsonEncode({'top': top, 'mid': mid, 'bot': bot});
+    if (_screenChannel?.state == RTCDataChannelState.RTCDataChannelOpen) {
+      _screenChannel!.send(RTCDataChannelMessage(payload));
+      return;
+    }
+
+    // Fallback for race windows before data channel opens.
+    _socketEmit('update_screen', {'top': top, 'mid': mid, 'bot': bot});
+  }
+
+  /// Legacy TTS bridge exposed by hardware server.
+  void speak(String text) => _socketEmit('speak', {'text': text});
+
   bool _hasWifi(List<ConnectivityResult> r) =>
       r.contains(ConnectivityResult.wifi);
 
   void _onConnectivityChanged(List<ConnectivityResult> results) {
     if (_disposed) return;
-
     if (_hasWifi(results)) {
-      _connectTimer?.cancel();
-      _retryDelay = const Duration(seconds: 3);
-      _connectTimer = Timer(const Duration(seconds: 1), () {
+      _retryTimer?.cancel();
+      _retryTimer = Timer(const Duration(seconds: 1), () {
         if (!_disposed && !_connecting && _socket?.connected != true) {
+          _retryDelay = const Duration(seconds: 3);
           _tryConnect();
         }
       });
     } else {
       _cancelSocket();
-      _stopMjpeg();
-      _connectTimer?.cancel();
+      _closeWebRTC();
+      _retryTimer?.cancel();
       _setStatus(const HwStatus.disconnected());
     }
   }
 
   Future<void> _tryConnect() async {
-    if (_disposed || _connecting || _socket?.connected == true) return;
-
+    if (_disposed || _connecting) return;
     _connecting = true;
-    _setStatus(HwStatus(
-      status: HwConnectionStatus.connecting,
-      info: status.value.info,
-      latencyMs: status.value.latencyMs,
-    ));
+    _setStatus(HwStatus(status: HwConnectionStatus.connecting));
 
     try {
-      await _cancelSocket();
-
+      _socket?.dispose();
       _socket = socket_io.io(
         AppConfig.hwSocketUrl,
         socket_io.OptionBuilder()
-            .setTransports(['websocket'])
-            .setPath('/socket.io/')
+            .setTransports(['polling', 'websocket'])
             .disableAutoConnect()
             .disableReconnection()
-            .enableForceNew()
-            .setTimeout(8000)
+            .setTimeout(4000)
             .build(),
       );
-
-      _setupListeners();
+      _setupSocketListeners();
       _socket!.connect();
     } catch (e) {
+      debugPrint('[HardwareService] socket connect error: $e');
       _connecting = false;
-      _setStatus(HwStatus(
-        status: HwConnectionStatus.disconnected,
-        error: e.toString(),
-      ));
+      _setStatus(const HwStatus.disconnected());
       _scheduleRetry();
     }
   }
 
-  // =========================================================================
-  // Socket.IO listeners
-  // =========================================================================
-
-  void _setupListeners() {
+  void _setupSocketListeners() {
     final socket = _socket!;
-    socket.clearListeners();
 
-    socket.onConnect((_) {
+    socket.onConnect((_) async {
+      debugPrint('[HardwareService] signalling socket connected');
       _connecting = false;
       _retryDelay = const Duration(seconds: 3);
-      _setStatus(HwStatus(
-        status: HwConnectionStatus.connected,
-        info: status.value.info,
-        latencyMs: status.value.latencyMs,
-      ));
+      _setStatus(HwStatus(status: HwConnectionStatus.connected));
       _startPingTimer();
+      await _startWebRTC();
     });
 
     socket.onDisconnect((_) {
+      debugPrint('[HardwareService] signalling socket disconnected');
       _connecting = false;
-      _stopMjpeg();
-      _resetRuntimeState();
-      _setStatus(HwStatus(
-        status: HwConnectionStatus.disconnected,
-        error: 'Socket disconnected',
-      ));
+      _pingTimer?.cancel();
+      _closeWebRTC();
+      _setStatus(const HwStatus.disconnected());
       if (!_disposed) _scheduleRetry();
     });
+
+    socket.onError((e) => debugPrint('[HardwareService] socket error: $e'));
 
     socket.onConnectError((e) {
+      debugPrint('[HardwareService] connect error: $e');
       _connecting = false;
-      _setStatus(HwStatus(
-        status: HwConnectionStatus.disconnected,
-        error: e?.toString(),
-      ));
+      _setStatus(const HwStatus.disconnected());
       if (!_disposed) _scheduleRetry();
-    });
-
-    socket.onError((e) {
-      _setStatus(HwStatus(
-        status: status.value.status,
-        info: status.value.info,
-        latencyMs: status.value.latencyMs,
-        error: e?.toString(),
-      ));
     });
 
     socket.on('hw_info', (data) {
       try {
-        final map = Map<String, dynamic>.from(data as Map);
-        final info = HwInfo.fromJson(map);
-
-        // Grab MJPEG URL sent by server in hw_info
-        _mjpegUrl = map['mjpeg_url'] as String?;
-
+        final info = HwInfo.fromJson(Map<String, dynamic>.from(data as Map));
         _setStatus(HwStatus(
           status: HwConnectionStatus.hardwareReady,
           info: info,
           latencyMs: status.value.latencyMs,
         ));
+        debugPrint('[HardwareService] hw_info: ${info.device} v${info.version}');
+      } catch (e) {
+        debugPrint('[HardwareService] hw_info parse error: $e');
+      }
+    });
 
-        _ensureHardwareStreams();
-      } catch (_) {}
+    socket.on('answer', (data) async {
+      try {
+        final map = Map<String, dynamic>.from(data as Map);
+        final desc = RTCSessionDescription(
+          map['sdp'] as String,
+          map['type'] as String,
+        );
+        await _pc?.setRemoteDescription(desc);
+        debugPrint('[HardwareService] Remote description (answer) set');
+      } catch (e) {
+        debugPrint('[HardwareService] setRemoteDescription error: $e');
+      }
+    });
+
+    socket.on('ice_candidate', (data) async {
+      try {
+        final map = Map<String, dynamic>.from(data as Map);
+        final candidate = RTCIceCandidate(
+          map['candidate'] as String,
+          map['sdpMid'] as String?,
+          map['sdpMLineIndex'] as int?,
+        );
+        await _pc?.addCandidate(candidate);
+      } catch (e) {
+        debugPrint('[HardwareService] addCandidate error: $e');
+      }
     });
 
     socket.on('hw_error', (data) {
-      final message = data is Map
-          ? (Map<String, dynamic>.from(data as Map))['message']?.toString()
-          : data?.toString();
+      debugPrint('[HardwareService] hw_error: $data');
       _setStatus(HwStatus(
         status: status.value.status,
         info: status.value.info,
         latencyMs: status.value.latencyMs,
-        error: message,
+        error: data?.toString(),
       ));
-    });
-
-    // Audio arrives via Socket.IO (video now MJPEG)
-    socket.on('audio', (data) {
-      try {
-        final bytes = _decodeBytes(data);
-        if (bytes == null) return;
-        onAudio?.call(bytes);
-      } catch (_) {}
     });
 
     socket.on('pong_hw', (_) {
@@ -237,127 +228,114 @@ class HardwareService {
     });
   }
 
-  // =========================================================================
-  // MJPEG video stream
-  // =========================================================================
+  Future<void> _startWebRTC() async {
+    if (_disposed) return;
+    _closeWebRTC();
 
-  Future<void> _startMjpeg() async {
-    if (_mjpegRunning || _mjpegUrl == null) return;
-    _mjpegRunning = true;
-    _mjpegBuffer.clear();
+    final config = {
+      'iceServers': [
+        {'urls': 'stun:stun.l.google.com:19302'},
+      ],
+      'sdpSemantics': 'unified-plan',
+    };
+
+    _pc = await createPeerConnection(config);
+
+    _localStream = await navigator.mediaDevices.getUserMedia({
+      'audio': true,
+      'video': false,
+    });
+    for (final track in _localStream!.getAudioTracks()) {
+      await _pc!.addTrack(track, _localStream!);
+    }
+    debugPrint('[HardwareService] Local audio track added');
+
+    _screenChannel = await _pc!.createDataChannel(
+      'screen',
+      RTCDataChannelInit()
+        ..ordered = true
+        ..maxRetransmits = 3,
+    );
+    _screenChannel!.onDataChannelState = (state) {
+      debugPrint('[HardwareService] DataChannel state: $state');
+    };
+
+    _pc!.onTrack = (RTCTrackEvent event) {
+      final track = event.track;
+      debugPrint('[HardwareService] Received remote track: ${track.kind}');
+
+      if (track.kind == 'video' && event.streams.isNotEmpty) {
+        remoteVideoRenderer.srcObject = event.streams.first;
+        debugPrint('[HardwareService] Camera stream attached to renderer');
+      }
+      // Remote audio is played by WebRTC platform audio engine.
+    };
+
+    _pc!.onIceCandidate = (RTCIceCandidate candidate) {
+      _socketEmit('ice_candidate', {
+        'candidate': candidate.candidate,
+        'sdpMid': candidate.sdpMid,
+        'sdpMLineIndex': candidate.sdpMLineIndex,
+      });
+    };
+
+    _pc!.onConnectionState = (RTCPeerConnectionState state) {
+      debugPrint('[HardwareService] PeerConnection state: $state');
+      if (state == RTCPeerConnectionState.RTCPeerConnectionStateFailed ||
+          state == RTCPeerConnectionState.RTCPeerConnectionStateDisconnected ||
+          state == RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
+        _closeWebRTC();
+        if (!_disposed && _socket?.connected == true) {
+          _scheduleRetry();
+        }
+      }
+    };
+
+    final offer = await _pc!.createOffer({
+      'offerToReceiveAudio': true,
+      'offerToReceiveVideo': true,
+    });
+    await _pc!.setLocalDescription(offer);
+
+    _socketEmit('offer', {
+      'sdp': offer.sdp,
+      'type': offer.type,
+    });
+    debugPrint('[HardwareService] WebRTC offer sent to Pi');
+  }
+
+  void _closeWebRTC() {
+    try {
+      _screenChannel?.close();
+    } catch (_) {}
+    _screenChannel = null;
+
+    _localStream?.getTracks().forEach((t) => t.stop());
+    _localStream?.dispose();
+    _localStream = null;
 
     try {
-      _mjpegClient = http.Client();
-      final request = http.Request('GET', Uri.parse(_mjpegUrl!));
-      request.headers['Connection'] = 'keep-alive';
+      _pc?.close();
+    } catch (_) {}
+    _pc = null;
 
-      final response = await _mjpegClient!.send(request);
+    remoteVideoRenderer.srcObject = null;
+  }
 
-      _mjpegSub = response.stream.listen(
-        _onMjpegChunk,
-        onDone: () {
-          _mjpegRunning = false;
-          // Auto-reconnect video if still supposed to be running
-          if (!_disposed && _socket?.connected == true) {
-            Future.delayed(const Duration(milliseconds: 200), _startMjpeg);
-          }
-        },
-        onError: (_) {
-          _mjpegRunning = false;
-          if (!_disposed && _socket?.connected == true) {
-            Future.delayed(const Duration(milliseconds: 500), _startMjpeg);
-          }
-        },
-        cancelOnError: true,
-      );
-    } catch (_) {
-      _mjpegRunning = false;
-      if (!_disposed && _socket?.connected == true) {
-        Future.delayed(const Duration(milliseconds: 500), _startMjpeg);
-      }
+  Future<void> _ensureRendererInit() async {
+    if (!_rendererInitialized) {
+      await remoteVideoRenderer.initialize();
+      _rendererInitialized = true;
     }
   }
-
-  /// Parse raw multipart MJPEG stream bytes into individual JPEG frames.
-  /// Scans for SOI (0xFF 0xD8) … EOI (0xFF 0xD9) sequences.
-  void _onMjpegChunk(List<int> chunk) {
-    _mjpegBuffer.addAll(chunk);
-
-    while (true) {
-      // Find SOI
-      final soi = _indexOf(_mjpegBuffer, _boundaryBytes);
-      if (soi == -1) {
-        // No SOI yet — keep at most the last byte (partial marker)
-        if (_mjpegBuffer.length > 1) {
-          final last = _mjpegBuffer.last;
-          _mjpegBuffer.clear();
-          _mjpegBuffer.add(last);
-        }
-        break;
-      }
-
-      // Find EOI after SOI
-      final eoi = _indexOf(_mjpegBuffer, _eoi, start: soi + 2);
-      if (eoi == -1) break; // frame not complete yet
-
-      final frameEnd = eoi + 2;
-      final jpeg = Uint8List.fromList(_mjpegBuffer.sublist(soi, frameEnd));
-      _mjpegBuffer.removeRange(0, frameEnd);
-
-      onFrame?.call(jpeg);
-    }
-
-    // Prevent unbounded growth (e.g., corrupt stream)
-    if (_mjpegBuffer.length > 512 * 1024) {
-      _mjpegBuffer.clear();
-    }
-  }
-
-  int _indexOf(List<int> haystack, List<int> needle, {int start = 0}) {
-    outer:
-    for (int i = start; i <= haystack.length - needle.length; i++) {
-      for (int j = 0; j < needle.length; j++) {
-        if (haystack[i + j] != needle[j]) continue outer;
-      }
-      return i;
-    }
-    return -1;
-  }
-
-  void _stopMjpeg() {
-    _mjpegRunning = false;
-    _mjpegSub?.cancel();
-    _mjpegSub = null;
-    _mjpegClient?.close();
-    _mjpegClient = null;
-    _mjpegBuffer.clear();
-  }
-
-  // =========================================================================
-  // Stream management
-  // =========================================================================
-
-  void _ensureHardwareStreams() {
-    if (_socket?.connected != true) return;
-    _startMjpeg();
-
-    // Mic — uncomment once video is confirmed stable
-    // if (!_micRequested) {
-    //   _micRequested = true;
-    //   startMic();
-    // }
-  }
-
-  // =========================================================================
-  // Retry / ping
-  // =========================================================================
 
   void _scheduleRetry() {
     _retryTimer?.cancel();
+    debugPrint('[HardwareService] retry in ${_retryDelay.inSeconds}s');
     _retryTimer = Timer(_retryDelay, () async {
       if (_disposed) return;
-      final results = await Connectivity().checkConnectivity();
-      if (_hasWifi(results)) _tryConnect();
+      final r = await Connectivity().checkConnectivity();
+      if (_hasWifi(r)) _tryConnect();
     });
     final next = Duration(seconds: _retryDelay.inSeconds * 2);
     _retryDelay = next > _maxRetryDelay ? _maxRetryDelay : next;
@@ -368,89 +346,63 @@ class HardwareService {
     _pingTimer = Timer.periodic(AppConfig.hwPingInterval, (_) {
       if (_socket?.connected == true) {
         _pingTimestamp = DateTime.now().millisecondsSinceEpoch;
-        _socket!.emit('ping_hw');
+        _socketEmit('ping_hw', {});
       }
     });
   }
 
-  // =========================================================================
-  // Helpers
-  // =========================================================================
-
-  Future<void> _cancelSocket() async {
+  void _cancelSocket() {
     _pingTimer?.cancel();
-    if (_socket != null) {
-      _socket!.clearListeners();
-      _socket!.disconnect();
-      _socket!.dispose();
-      _socket = null;
-      await Future.delayed(const Duration(milliseconds: 100));
-    }
+    _socket?.dispose();
+    _socket = null;
     _connecting = false;
-  }
-
-  void _resetRuntimeState() {
-    _pingTimer?.cancel();
-    _pingTimestamp = 0;
-    _micRequested = false;
   }
 
   void _setStatus(HwStatus s) {
     if (!_disposed) status.value = s;
   }
 
-  Uint8List? _decodeBytes(dynamic data) {
-    if (data is Uint8List) return data;
-    if (data is List<int>) return Uint8List.fromList(data);
-    if (data is List) {
-      return Uint8List.fromList(
-        data.whereType<num>().map((v) => v.toInt()).toList(),
-      );
+  void _socketEmit(String event, dynamic data) {
+    if (_socket?.connected == true) {
+      _socket!.emit(event, data);
     }
-    return null;
   }
 
-  // =========================================================================
-  // Public API
-  // =========================================================================
+  // ---------------------------------------------------------------------------
+  // Compatibility shims (legacy API preserved, intentionally no-op for media)
+  // ---------------------------------------------------------------------------
 
   void startMic() {
-    _micRequested = true;
-    _emit('start_mic', {});
+    // Media is negotiated via WebRTC. Kept for backward compatibility.
+    _socketEmit('start_mic', {});
   }
 
   void stopMic() {
-    _micRequested = false;
-    _emit('stop_mic', {});
+    // Media is negotiated via WebRTC. Kept for backward compatibility.
+    _socketEmit('stop_mic', {});
   }
 
-  void updateScreen({String top = '', String mid = '', String bot = ''}) =>
-      _emit('update_screen', {'top': top, 'mid': mid, 'bot': bot});
-
-  void speak(String text) => _emit('speak', {'text': text});
-
-  /// Legacy: still emits to server but video is now via MJPEG.
-  void startStream() => _emit('start_stream', {
-        'fps': AppConfig.hwStreamFps,
-        'quality': AppConfig.hwStreamQuality,
-      });
+  void startStream() {
+    // Pi server handles media via WebRTC tracks; this event is legacy no-op.
+    _socketEmit('start_stream', {
+      'fps': AppConfig.hwStreamFps,
+      'quality': AppConfig.hwStreamQuality,
+    });
+  }
 
   void stopStream() {
-    _stopMjpeg();
-    _emit('stop_stream', {});
-  }
-
-  void _emit(String event, dynamic data) {
-    if (_socket?.connected == true) _socket!.emit(event, data);
+    // Legacy no-op / remote-side compatibility event.
+    _socketEmit('stop_stream', {});
   }
 
   void dispose() {
     _disposed = true;
     _retryTimer?.cancel();
-    _connectTimer?.cancel();
+    _pingTimer?.cancel();
     _connectivitySub?.cancel();
-    _stopMjpeg();
+    _closeWebRTC();
     _cancelSocket();
+    remoteVideoRenderer.dispose();
     status.dispose();
   }
 }

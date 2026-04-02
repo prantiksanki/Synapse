@@ -148,7 +148,7 @@ class _ReelViewState extends State<_ReelView> {
   final List<Timer> _sequenceTimers = [];
 
   // How long each sign is highlighted before advancing.
-  static const Duration _perSignDuration = Duration(milliseconds: 900);
+  static const Duration _perSignDuration = Duration(milliseconds: 600);
 
   @override
   void didChangeDependencies() {
@@ -346,11 +346,21 @@ class _BottomMeta extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Selector<WatchModeProvider,
-        ({String transcript, WatchModeState state, String message})>(
+        ({
+          String transcript,
+          WatchModeState state,
+          String message,
+          String sourceLabel,
+          String engineLabel,
+          String gloss,
+        })>(
       selector: (_, w) => (
         transcript: w.rawTranscript,
         state: w.state,
         message: w.statusMessage,
+        sourceLabel: w.transcriptSourceLabel,
+        engineLabel: w.conversionEngineLabel,
+        gloss: w.lastGloss,
       ),
       builder: (_, data, __) => Column(
         mainAxisSize: MainAxisSize.min,
@@ -377,7 +387,71 @@ class _BottomMeta extends StatelessWidget {
                 overflow: TextOverflow.ellipsis,
               ),
             ),
+          if (data.gloss.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(
+                'Gloss: ${data.gloss}',
+                style: const TextStyle(
+                  color: Colors.white70,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  height: 1.3,
+                ),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _MetaBadge(
+                icon: Icons.graphic_eq_rounded,
+                label: data.sourceLabel,
+              ),
+              _MetaBadge(
+                icon: Icons.memory_rounded,
+                label: data.engineLabel,
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
           _StatusChip(state: data.state, message: data.message),
+        ],
+      ),
+    );
+  }
+}
+
+class _MetaBadge extends StatelessWidget {
+  final IconData icon;
+  final String label;
+
+  const _MetaBadge({required this.icon, required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: const Color(0x332A353B),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white24),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: Colors.white70),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: const TextStyle(
+              color: Colors.white70,
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
         ],
       ),
     );
@@ -616,10 +690,6 @@ class _FullScreenVideo extends StatelessWidget {
         ),
       );
     }
-
-    final ratio = controller!.value.aspectRatio > 0
-        ? controller!.value.aspectRatio
-        : 9 / 16;
 
     return SizedBox.expand(
       child: FittedBox(

@@ -7,3 +7,7 @@ node_modules
 /test/assets/models/*.onnx
 App2/assets/models/*.onnx
 test/*.onnx
+test/best_saved_model
+video_to_sign
+files
+test/light_weight/Indian Sign Language Gesture Landmarks.csv

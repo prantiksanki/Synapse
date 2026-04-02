@@ -29,6 +29,7 @@ dependencies:
   flutter_overlay_window: ^0.4.3
   video_player: ^2.9.2
   url_launcher: ^6.3.2
+  tflite_flutter: ^0.12.1
 
 dev_dependencies:
   flutter_test:
@@ -43,6 +44,9 @@ flutter:
     - .env
     - assets/models/hand_landmarker.task
     - assets/models/t5_vocab.txt
+    - assets/models/sign_classifier.tflite
+    - assets/models/sign_labels.txt
+    - assets/models/sign_norm.json
     - assets/sign_images/
     - assets/sign_videos/
     - assets/Logo.png

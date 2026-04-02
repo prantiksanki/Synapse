@@ -16,6 +16,7 @@ import '../services/sign_image_service.dart';
 import '../services/speech_service.dart';
 import '../services/t5_grammar_service.dart';
 import '../services/t5_model_downloader.dart';
+import '../services/tflite_classifier.dart';
 import '../services/tts_service.dart';
 import '../services/word_buffer.dart';
 import '../widgets/sign_image_display.dart';
@@ -33,6 +34,7 @@ class DetectionProvider extends ChangeNotifier {
 
   final CameraService _cameraService = CameraService();
   final HandLandmarkService _handLandmarkService = HandLandmarkService();
+  final TfliteClassifier _tfliteClassifier = TfliteClassifier();
   final WordBufferService _wordBufferService = WordBufferService();
   final T5GrammarService _grammarService = T5GrammarService();
   final T5ModelDownloader _downloader = T5ModelDownloader();
@@ -147,6 +149,13 @@ class DetectionProvider extends ChangeNotifier {
       _handLandmarkService.initialize(
         sensorOrientation: _cameraService.sensorOrientation,
       );
+      await _tfliteClassifier.load();
+      if (!_tfliteClassifier.isReady) {
+        debugPrint(
+          '[DetectionProvider] TFLite classifier failed to load '
+          '(${_tfliteClassifier.loadError}), falling back to rule-based.',
+        );
+      }
       await _signImageService.initialize();
       _speechServiceReady = await _speechService.initialize();
       _speechService.onResult = _onSpeechResult;
@@ -279,8 +288,11 @@ class DetectionProvider extends ChangeNotifier {
     _handIsPresent = true;
     _currentLandmarks = HandLandmarks.fromList(landmarks);
 
-    // Classify synchronously using rule-based classifier (no network, instant)
-    final classResult = classify(landmarks, RuleSubMode.alphabet);
+    // TFLite classifier — single hand goes into left slot (training convention)
+    // Falls back to rule-based if TFLite is not loaded yet.
+    final classResult = _tfliteClassifier.isReady
+        ? _tfliteClassifier.classify(leftLandmarks: landmarks)
+        : classify(landmarks, RuleSubMode.alphabet);
 
     if (classResult != null) {
       final isSame = _currentGesture?.label == classResult.label;
@@ -348,17 +360,98 @@ class DetectionProvider extends ChangeNotifier {
     _isGeneratingSentence = true;
     notifyListeners();
 
-    final result = await _openRouterService.formSentence(phrase);
+    if (AppConfig.preferCloudSentenceGeneration && !AppConfig.strictOfflineMode) {
+      try {
+        final result = await _openRouterService
+            .formSentence(phrase)
+            .timeout(Duration(milliseconds: AppConfig.cloudSentenceMaxWaitMs));
+        if (requestId != _generationRequestId) return;
 
-    if (requestId != _generationRequestId) return;
-    _generationResult = result;
+        final cloudText = result.sentence.trim();
+        final finalText =
+            cloudText.isNotEmpty ? cloudText : _quickComposeFromLetters(phrase);
+
+        _generationResult = cloudText.isNotEmpty
+            ? result
+            : LlmGenerationResult(
+                inputTokens: phrase,
+                sentence: finalText,
+                latencyMs: result.latencyMs,
+                source: 'local_fallback',
+              );
+        _isGeneratingSentence = false;
+        notifyListeners();
+
+        if (finalText.isNotEmpty) {
+          if (_callModeActive) {
+            onSentenceForCall?.call(finalText);
+          } else {
+            unawaited(_speakImmediately(finalText));
+          }
+        }
+        return;
+      } catch (_) {
+        // Fall through to instant local fallback for responsiveness.
+      }
+    }
+
+    // Local fallback path (or primary path when cloud preference is disabled).
+    final instantText = _quickComposeFromLetters(phrase);
+    _generationResult = LlmGenerationResult(
+      inputTokens: phrase,
+      sentence: instantText,
+      latencyMs: 0,
+      source: 'local_instant',
+    );
     _isGeneratingSentence = false;
     notifyListeners();
 
-    if (_callModeActive) {
-      onSentenceForCall?.call(result.sentence);
-    } else if (result.hasSentence) {
-      unawaited(_ttsService.speak(result.sentence));
+    if (instantText.trim().isNotEmpty) {
+      if (_callModeActive) {
+        onSentenceForCall?.call(instantText);
+      } else {
+        unawaited(_speakImmediately(instantText));
+      }
+    }
+  }
+
+  String _quickComposeFromLetters(String rawTokens) {
+    final tokens = rawTokens
+        .split(' ')
+        .map((t) => t.trim().toUpperCase())
+        .where((t) => t.isNotEmpty && t != 'DELETE')
+        .toList();
+
+    if (tokens.isEmpty) return '';
+
+    final words = <String>[];
+    final current = StringBuffer();
+    for (final t in tokens) {
+      if (t == 'SPACE') {
+        if (current.isNotEmpty) {
+          words.add(current.toString().toLowerCase());
+          current.clear();
+        }
+      } else {
+        current.write(t);
+      }
+    }
+    if (current.isNotEmpty) {
+      words.add(current.toString().toLowerCase());
+    }
+
+    if (words.isEmpty) return '';
+    if (words.length == 1) return words.first;
+    return words.join(' ');
+  }
+
+  Future<void> _speakImmediately(String text) async {
+    try {
+      // Prevent long queued utterances; prioritize latest generated result.
+      await _ttsService.stop();
+      await _ttsService.speak(text);
+    } catch (e) {
+      debugPrint('TTS immediate error: $e');
     }
   }
 
@@ -533,7 +626,9 @@ class DetectionProvider extends ChangeNotifier {
     _currentLandmarks = HandLandmarks.fromList(landmarks);
 
     final now = DateTime.now();
-    final classResult = classify(landmarks, RuleSubMode.alphabet);
+    final classResult = _tfliteClassifier.isReady
+        ? _tfliteClassifier.classify(leftLandmarks: landmarks)
+        : classify(landmarks, RuleSubMode.alphabet);
 
     if (classResult != null) {
       final isSame = _currentGesture?.label == classResult.label;
@@ -566,6 +661,7 @@ class DetectionProvider extends ChangeNotifier {
     _hardwareService?.onFrame = null;
     _cameraService.dispose();
     _handLandmarkService.dispose();
+    _tfliteClassifier.dispose();
     _grammarService.dispose();
     unawaited(_ttsService.stop());
     unawaited(_speechService.stopListening());

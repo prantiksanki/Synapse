@@ -66,10 +66,10 @@ class HandLandmarkService {
       // Each hand has 21 landmarks with x, y, z coordinates (normalized 0-1)
       final handLandmarks = result.first;
 
-      // Convert to list of [x, y] pairs (we only need 2D for classification)
+      // Include z coordinate for TFLite classifier (rule classifier ignores it)
       final landmarks = <List<double>>[];
       for (final landmark in handLandmarks.landmarks) {
-        landmarks.add([landmark.x, landmark.y]);
+        landmarks.add([landmark.x, landmark.y, landmark.z]);
       }
 
       return landmarks;
@@ -168,7 +168,7 @@ class HandLandmarkService {
 
       final landmarks = <List<double>>[];
       for (final lm in result.first.landmarks) {
-        landmarks.add([lm.x, lm.y]);
+        landmarks.add([lm.x, lm.y, lm.z]);
       }
       return landmarks;
     } catch (e) {

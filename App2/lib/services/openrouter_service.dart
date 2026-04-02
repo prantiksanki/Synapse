@@ -36,6 +36,10 @@ class OpenRouterService {
       );
     }
 
+    if (AppConfig.strictOfflineMode || AppConfig.watchOfflineOnly) {
+      return _fallback(rawTokens, cleaned, stopwatch);
+    }
+
     final apiKey = _apiKey;
     if (apiKey == null || apiKey.isEmpty) {
       debugPrint('[OpenRouter] No API key found in .env');

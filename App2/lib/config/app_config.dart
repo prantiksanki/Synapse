@@ -14,16 +14,23 @@ class AppConfig {
 
   static const double gestureConfidenceThreshold = 0.50;
 
-  // 3-second gap between accepted letters (duplicate suppression)
-  static const Duration duplicateSuppression = Duration(seconds: 3);
+  // Keep duplicate suppression short so letter streaming feels responsive.
+  static const Duration duplicateSuppression = Duration(milliseconds: 700);
 
-  // 4-second no-hand window triggers sentence generation
-  static const Duration noHandSentenceTrigger = Duration(seconds: 4);
+  // Commit quickly after hand pause for near-instant phrase generation/speech.
+  static const Duration noHandSentenceTrigger = Duration(milliseconds: 1200);
 
   // OpenRouter LLM
   static const String openRouterModel = 'qwen/qwen3-8b';
   static const String openRouterUrl = 'https://openrouter.ai/api/v1/chat/completions';
   static const int openRouterTimeoutMs = 5000;
+  static const bool preferCloudSentenceGeneration = true;
+  static const int cloudSentenceMaxWaitMs = 2200;
+  // Hard kill switch for all cloud NLP calls (OpenRouter, etc.).
+  // Keep true for privacy-first / offline-only deployments.
+  static const bool strictOfflineMode = true;
+  static const bool watchOfflineOnly = true;
+  static const bool watchPreferSystemAudio = true;
 
   // T5 grammar model downloaded on first launch from Hugging Face.
   static const String _hfBase =
