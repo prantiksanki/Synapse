@@ -174,6 +174,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--min-confidence", type=float, default=0.35, help="Min confidence before showing class name."
     )
+    parser.add_argument(
+        "--stable-seconds",
+        type=float,
+        default=2.0,
+        help="Time a predicted symbol must stay stable before it is shown.",
+    )
     parser.add_argument("--flip", action="store_true", help="Mirror webcam image for natural UX.")
     parser.add_argument(
         "--hand-model",
@@ -265,8 +271,13 @@ def main() -> int:
     pred_history: deque = deque(maxlen=max(1, args.history))
     frame_times: deque = deque(maxlen=60)
     extractor = DualHandLandmarkExtractor(task_model=args.hand_model)
+    stable_seconds = max(0.1, float(args.stable_seconds))
+    shown_label = "No hand"
+    shown_conf = 0.0
+    pending_label: str | None = None
+    pending_since = 0.0
 
-    print("Running — press ESC or 'q' to quit.", flush=True)
+    print("Running - press ESC or 'q' to quit.", flush=True)
 
     try:
         while True:
@@ -281,8 +292,12 @@ def main() -> int:
             features = extractor.extract(frame)
             if features is None:
                 pred_history.clear()
-                label_text = "No hand"
-                conf_text = "0.00"
+                pending_label = None
+                shown_label = "No hand"
+                shown_conf = 0.0
+                label_text = shown_label
+                conf_text = f"{shown_conf:.2f}"
+                lock_text = "Lock: no hand"
             else:
                 features = (features - mean) / std
 
@@ -306,8 +321,30 @@ def main() -> int:
                 pred_history.append((pred_idx, pred_conf))
 
                 smooth_label, smooth_conf = smooth_prediction(pred_history, labels)
-                label_text = smooth_label if smooth_conf >= args.min_confidence else "Uncertain"
-                conf_text = f"{smooth_conf:.2f}"
+                candidate_label = smooth_label if smooth_conf >= args.min_confidence else "Uncertain"
+                now = time.perf_counter()
+
+                if candidate_label == shown_label:
+                    pending_label = None
+                    pending_since = 0.0
+                    shown_conf = smooth_conf
+                    lock_text = f"Lock: {shown_label} stable"
+                else:
+                    if pending_label != candidate_label:
+                        pending_label = candidate_label
+                        pending_since = now
+                    elapsed = now - pending_since
+                    if elapsed >= stable_seconds:
+                        shown_label = candidate_label
+                        shown_conf = smooth_conf
+                        pending_label = None
+                        pending_since = 0.0
+                        lock_text = f"Lock: switched to {shown_label}"
+                    else:
+                        lock_text = f"Lock: {candidate_label} {elapsed:.1f}/{stable_seconds:.1f}s"
+
+                label_text = shown_label
+                conf_text = f"{shown_conf:.2f}"
 
             frame_times.append(time.perf_counter() - t0)
             avg_frame_time = float(np.mean(frame_times)) if frame_times else 0.0
@@ -316,6 +353,7 @@ def main() -> int:
             cv2.putText(frame, f"Sign: {label_text}", (12, 35), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (40, 220, 40), 2)
             cv2.putText(frame, f"Conf: {conf_text}", (12, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 200, 40), 2)
             cv2.putText(frame, f"FPS : {fps:.1f}", (12, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (70, 170, 255), 2)
+            cv2.putText(frame, lock_text, (12, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (180, 220, 255), 2)
 
             cv2.imshow("ISL Sign Classifier", frame)
             key = cv2.waitKey(1) & 0xFF
@@ -331,3 +369,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

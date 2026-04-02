@@ -13,6 +13,7 @@ class AppConfig {
   static const String appTitle = 'VAANI';
 
   static const double gestureConfidenceThreshold = 0.50;
+  static const Duration gestureStabilizationDelay = Duration(seconds: 2);
 
   // Keep duplicate suppression short so letter streaming feels responsive.
   static const Duration duplicateSuppression = Duration(milliseconds: 700);

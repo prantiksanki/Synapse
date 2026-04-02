@@ -65,6 +65,8 @@ class DetectionProvider extends ChangeNotifier {
 
   // Rule-based classification state
   DateTime? _lastLetterAcceptedAt;
+  GestureResult? _pendingGesture;
+  DateTime? _pendingGestureSince;
   Timer? _noHandTimer;
 
   Timer? _sttRestartDebounce;
@@ -277,6 +279,7 @@ class DetectionProvider extends ChangeNotifier {
       final hadLandmarks = _currentLandmarks != null || _currentGesture != null;
       _currentLandmarks = null;
       _currentGesture = null;
+      _clearPendingGesture();
       _onNoHandDetected();
       _scheduleNoHandTrigger();
       if (hadLandmarks) notifyListeners();
@@ -295,24 +298,30 @@ class DetectionProvider extends ChangeNotifier {
         : classify(landmarks, RuleSubMode.alphabet);
 
     if (classResult != null) {
-      final isSame = _currentGesture?.label == classResult.label;
+      final candidate = GestureResult(
+        label: classResult.label,
+        labelIndex: classResult.labelIndex,
+        confidence: classResult.confidence,
+        probabilities: classResult.probabilities,
+        timestampMs: now.millisecondsSinceEpoch,
+      );
+      final stableGesture = _tryAcceptStableGesture(candidate: candidate, now: now);
+      if (stableGesture == null) return;
+
+      final isSame = _currentGesture?.label == stableGesture.label;
       final inWindow = _lastLetterAcceptedAt != null &&
           now.difference(_lastLetterAcceptedAt!) < AppConfig.duplicateSuppression;
 
       if (!(isSame && inWindow)) {
         // Accept this letter
         _lastLetterAcceptedAt = now;
-        _currentGesture = GestureResult(
-          label: classResult.label,
-          labelIndex: classResult.labelIndex,
-          confidence: classResult.confidence,
-          probabilities: classResult.probabilities,
-          timestampMs: now.millisecondsSinceEpoch,
-        );
+        _currentGesture = stableGesture;
         final phrase = _wordBufferService.ingest(_currentGesture);
         if (phrase != null) unawaited(_generateSentence(phrase));
         notifyListeners();
       }
+    } else {
+      _clearPendingGesture();
     }
   }
 
@@ -614,6 +623,7 @@ class DetectionProvider extends ChangeNotifier {
     if (landmarks == null || landmarks.length != 21) {
       _currentLandmarks = null;
       _currentGesture = null;
+      _clearPendingGesture();
       _onNoHandDetected();
       _scheduleNoHandTrigger();
       notifyListeners();
@@ -631,25 +641,65 @@ class DetectionProvider extends ChangeNotifier {
         : classify(landmarks, RuleSubMode.alphabet);
 
     if (classResult != null) {
-      final isSame = _currentGesture?.label == classResult.label;
+      final candidate = GestureResult(
+        label: classResult.label,
+        labelIndex: classResult.labelIndex,
+        confidence: classResult.confidence,
+        probabilities: classResult.probabilities,
+        timestampMs: now.millisecondsSinceEpoch,
+      );
+      final stableGesture = _tryAcceptStableGesture(candidate: candidate, now: now);
+      if (stableGesture == null) {
+        notifyListeners();
+        return;
+      }
+
+      final isSame = _currentGesture?.label == stableGesture.label;
       final inWindow = _lastLetterAcceptedAt != null &&
           now.difference(_lastLetterAcceptedAt!) < AppConfig.duplicateSuppression;
 
       if (!(isSame && inWindow)) {
         _lastLetterAcceptedAt = now;
-        _currentGesture = GestureResult(
-          label: classResult.label,
-          labelIndex: classResult.labelIndex,
-          confidence: classResult.confidence,
-          probabilities: classResult.probabilities,
-          timestampMs: now.millisecondsSinceEpoch,
-        );
+        _currentGesture = stableGesture;
         final phrase = _wordBufferService.ingest(_currentGesture);
         if (phrase != null) unawaited(_generateSentence(phrase));
       }
+    } else {
+      _clearPendingGesture();
     }
 
     notifyListeners();
+  }
+
+  void _clearPendingGesture() {
+    _pendingGesture = null;
+    _pendingGestureSince = null;
+  }
+
+  GestureResult? _tryAcceptStableGesture({
+    required GestureResult candidate,
+    required DateTime now,
+  }) {
+    final currentLabel = _currentGesture?.label;
+    if (currentLabel == candidate.label) {
+      _clearPendingGesture();
+      return candidate;
+    }
+
+    if (_pendingGesture == null || _pendingGesture!.label != candidate.label) {
+      _pendingGesture = candidate;
+      _pendingGestureSince = now;
+      return null;
+    }
+
+    _pendingGesture = candidate;
+    final pendingSince = _pendingGestureSince ?? now;
+    if (now.difference(pendingSince) >= AppConfig.gestureStabilizationDelay) {
+      _clearPendingGesture();
+      return candidate;
+    }
+
+    return null;
   }
 
   // ── Dispose ──────────────────────────────────────────────────────────────────

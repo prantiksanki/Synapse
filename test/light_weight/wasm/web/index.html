@@ -1,0 +1,395 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Synapse Sign Recognition Console</title>
+    <style>
+      @import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap");
+
+      :root {
+        --bg: #07111d;
+        --surface: #0d1b2a;
+        --surface-soft: #13273c;
+        --line: #1e3a56;
+        --text: #e2ecf5;
+        --muted: #87a2bb;
+        --brand: #1fbf93;
+        --warning: #e9a544;
+        --danger: #df5f67;
+        --ok: #3ad49f;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: "Manrope", sans-serif;
+        color: var(--text);
+        min-height: 100vh;
+        background:
+          radial-gradient(70rem 70rem at 100% -20%, #0f3854 0%, rgba(15, 56, 84, 0) 60%),
+          radial-gradient(55rem 55rem at -20% 100%, #163247 0%, rgba(22, 50, 71, 0) 55%),
+          var(--bg);
+      }
+
+      .shell {
+        width: min(1120px, calc(100vw - 2rem));
+        margin: 1.4rem auto;
+        display: grid;
+        gap: 1rem;
+      }
+
+      .headline {
+        background: linear-gradient(145deg, rgba(18, 39, 58, 0.98), rgba(9, 20, 32, 0.96));
+        border: 1px solid rgba(38, 75, 109, 0.7);
+        border-radius: 16px;
+        padding: 1rem 1.1rem;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 0.8rem;
+      }
+
+      .title {
+        margin: 0;
+        font-size: clamp(1.1rem, 2.4vw, 1.5rem);
+        font-weight: 800;
+        letter-spacing: 0.01em;
+      }
+
+      .subtitle {
+        margin: 0.2rem 0 0;
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.45rem;
+        padding: 0.38rem 0.64rem;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        color: var(--muted);
+        font-size: 0.76rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+
+      .dot {
+        width: 0.55rem;
+        height: 0.55rem;
+        border-radius: 50%;
+        background: #63778a;
+      }
+
+      .dot.ok {
+        background: var(--ok);
+      }
+
+      .dot.warn {
+        background: var(--warning);
+      }
+
+      .content {
+        display: grid;
+        grid-template-columns: minmax(0, 1.28fr) minmax(300px, 1fr);
+        gap: 1rem;
+      }
+
+      .card {
+        background: linear-gradient(160deg, rgba(16, 34, 51, 0.95), rgba(10, 21, 33, 0.96));
+        border: 1px solid rgba(38, 75, 109, 0.72);
+        border-radius: 16px;
+        padding: 0.95rem;
+      }
+
+      .card h3 {
+        margin: 0;
+        font-size: 0.93rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: #a0bdd4;
+      }
+
+      video {
+        width: 100%;
+        aspect-ratio: 4 / 3;
+        object-fit: cover;
+        border-radius: 12px;
+        border: 1px solid rgba(58, 93, 122, 0.7);
+        background: #03070d;
+      }
+
+      .capture-meta {
+        margin-top: 0.8rem;
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.56rem;
+      }
+
+      .pill {
+        border: 1px solid rgba(52, 87, 114, 0.8);
+        border-radius: 10px;
+        padding: 0.56rem 0.62rem;
+        background: rgba(13, 31, 46, 0.7);
+      }
+
+      .pill-label {
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        color: #85a8c4;
+      }
+
+      .pill-value {
+        margin-top: 0.2rem;
+        font-weight: 800;
+        font-size: 1.05rem;
+      }
+
+      .pred {
+        margin-top: 0.86rem;
+        border: 1px solid rgba(66, 113, 147, 0.75);
+        border-radius: 12px;
+        background: linear-gradient(145deg, rgba(11, 26, 41, 0.85), rgba(14, 36, 52, 0.85));
+        padding: 0.82rem;
+      }
+
+      .pred-letter {
+        font-size: clamp(2rem, 5vw, 2.9rem);
+        font-weight: 800;
+        line-height: 1;
+      }
+
+      .pred-sub {
+        margin-top: 0.35rem;
+        color: var(--muted);
+        font-size: 0.88rem;
+      }
+
+      .progress-track {
+        margin-top: 0.62rem;
+        width: 100%;
+        height: 0.55rem;
+        border-radius: 999px;
+        background: rgba(46, 72, 95, 0.5);
+        border: 1px solid rgba(57, 86, 112, 0.55);
+        overflow: hidden;
+      }
+
+      .progress-fill {
+        height: 100%;
+        width: 0%;
+        background: linear-gradient(90deg, #1fbf93, #32d6a6);
+        transition: width 90ms linear;
+      }
+
+      .stack {
+        display: grid;
+        gap: 0.72rem;
+      }
+
+      .field {
+        display: grid;
+        gap: 0.38rem;
+      }
+
+      label {
+        font-size: 0.75rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        color: #90afc8;
+      }
+
+      input {
+        width: 100%;
+        border-radius: 10px;
+        border: 1px solid rgba(56, 90, 120, 0.8);
+        padding: 0.62rem 0.72rem;
+        background: rgba(8, 21, 33, 0.92);
+        color: var(--text);
+        font: inherit;
+      }
+
+      input:focus {
+        outline: none;
+        border-color: rgba(58, 178, 143, 0.9);
+        box-shadow: 0 0 0 2px rgba(31, 191, 147, 0.2);
+      }
+
+      .btn-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0.5rem;
+      }
+
+      button {
+        border: 0;
+        border-radius: 10px;
+        padding: 0.62rem 0.75rem;
+        color: #eaf6ff;
+        font: inherit;
+        font-size: 0.9rem;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        cursor: pointer;
+        transition: transform 120ms ease, opacity 120ms ease;
+      }
+
+      button:hover {
+        transform: translateY(-1px);
+      }
+
+      button:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+        transform: none;
+      }
+
+      .btn-primary {
+        background: linear-gradient(135deg, #1ca67f, #2bc89b);
+      }
+
+      .btn-secondary {
+        background: linear-gradient(135deg, #2e475f, #3a5874);
+      }
+
+      .status {
+        margin-top: 0.25rem;
+        border-radius: 10px;
+        border: 1px solid rgba(52, 88, 116, 0.78);
+        background: rgba(11, 24, 36, 0.65);
+        padding: 0.62rem 0.65rem;
+        color: #9cb8cf;
+        font-size: 0.84rem;
+      }
+
+      .status.ok {
+        border-color: rgba(35, 142, 111, 0.9);
+        color: #70dfba;
+      }
+
+      .status.warn {
+        border-color: rgba(182, 121, 56, 0.95);
+        color: #f2bb74;
+      }
+
+      .status.error {
+        border-color: rgba(179, 82, 90, 0.95);
+        color: #ff9da6;
+      }
+
+      .hint {
+        margin: 0;
+        color: #86a7c3;
+        font-size: 0.78rem;
+        line-height: 1.36;
+      }
+
+      @media (max-width: 960px) {
+        .shell {
+          width: min(100vw - 1rem, 1120px);
+          margin: 0.5rem auto 1rem;
+        }
+
+        .content {
+          grid-template-columns: 1fr;
+        }
+
+        .headline {
+          flex-direction: column;
+          align-items: flex-start;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <section class="headline">
+        <div>
+          <h1 class="title">Synapse Sign Recognition Console</h1>
+          <p class="subtitle">MediaPipe hand landmarks with Python bridge inference (<code>model.tflite</code>).</p>
+        </div>
+        <div class="badge" id="connectionBadge">
+          <span class="dot" id="connectionDot"></span>
+          <span id="connectionText">Disconnected</span>
+        </div>
+      </section>
+
+      <section class="content">
+        <article class="card">
+          <h3>Live Capture</h3>
+          <video id="video" autoplay playsinline muted></video>
+
+          <div class="capture-meta">
+            <div class="pill">
+              <div class="pill-label">Backend</div>
+              <div class="pill-value" id="backend">-</div>
+            </div>
+            <div class="pill">
+              <div class="pill-label">FPS</div>
+              <div class="pill-value" id="fps">0.0</div>
+            </div>
+            <div class="pill">
+              <div class="pill-label">Hands</div>
+              <div class="pill-value" id="hands">0</div>
+            </div>
+            <div class="pill">
+              <div class="pill-label">Confidence</div>
+              <div class="pill-value" id="confidence">0.000</div>
+            </div>
+          </div>
+
+          <div class="pred">
+            <div class="pill-label">Current Letter</div>
+            <div class="pred-letter" id="prediction">-</div>
+            <div class="pred-sub" id="lockLabel">Waiting for a stable symbol...</div>
+            <div class="progress-track" aria-hidden="true">
+              <div class="progress-fill" id="lockProgress"></div>
+            </div>
+          </div>
+        </article>
+
+        <aside class="card stack">
+          <h3>Controls</h3>
+
+          <div class="field">
+            <label for="wsUrl">WebSocket Bridge URL</label>
+            <input
+              id="wsUrl"
+              placeholder="ws://127.0.0.1:8787/ws/sign"
+              value="ws://127.0.0.1:8787/ws/sign"
+            />
+          </div>
+
+          <div class="field">
+            <label for="stableWindow">Stable Window (ms)</label>
+            <input id="stableWindow" type="number" min="200" step="100" value="2000" />
+          </div>
+
+          <div class="field">
+            <label for="minConfidence">Minimum Confidence</label>
+            <input id="minConfidence" type="number" min="0" max="1" step="0.05" value="0.50" />
+          </div>
+
+          <div class="btn-row">
+            <button id="connectWsBtn" class="btn-primary" type="button">Connect</button>
+            <button id="disconnectWsBtn" class="btn-secondary" type="button">Disconnect</button>
+          </div>
+
+          <div id="status" class="status">Initializing…</div>
+          <p class="hint">A new symbol is shown only after it remains stable for the selected window and exceeds minimum confidence.</p>
+        </aside>
+      </section>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>
