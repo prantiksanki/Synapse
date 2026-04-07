@@ -108,13 +108,8 @@ class SignLanguageApp extends StatelessWidget {
             return b;
           },
         ),
-        ChangeNotifierProxyProvider<DetectionProvider, WebRtcProvider>(
+        ChangeNotifierProvider<WebRtcProvider>(
           create: (_) => WebRtcProvider(),
-          update: (_, detection, webRtc) {
-            final w = webRtc ?? WebRtcProvider();
-            w.setDetectionProvider(detection);
-            return w;
-          },
         ),
       ],
       child: MaterialApp(

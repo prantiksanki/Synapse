@@ -22,6 +22,9 @@ class TutorialRepository implements TutorialDataSource {
   static const _unlockedMapKey = 'tutorial_latest_unlocked_by_unit';
   static const _streakKey = 'tutorial_streak';
   static const _xpKey = 'tutorial_xp';
+  static const _dailyXpKey = 'tutorial_daily_xp';
+  static const _lastActiveDateKey = 'tutorial_last_active_date';
+  static const _heartsKey = 'tutorial_hearts';
 
   final Future<String> Function(String path) _loadString;
   final Future<SharedPreferences> Function() _prefsFactory;
@@ -69,12 +72,24 @@ class TutorialRepository implements TutorialDataSource {
       }
     }
 
+    final today = _todayString();
+    final lastDate = prefs.getString(_lastActiveDateKey) ?? '';
+    final dailyXp = lastDate == today ? (prefs.getInt(_dailyXpKey) ?? 0) : 0;
+
     return TutorialProgress(
       completedLessonIds: completed.toSet(),
       latestUnlockedByUnit: unlocked,
       streak: prefs.getInt(_streakKey) ?? 0,
       xp: prefs.getInt(_xpKey) ?? 0,
+      dailyXp: dailyXp,
+      lastActiveDate: lastDate,
+      hearts: prefs.getInt(_heartsKey) ?? 5,
     );
+  }
+
+  String _todayString() {
+    final now = DateTime.now();
+    return '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
   }
 
   @override
@@ -87,6 +102,9 @@ class TutorialRepository implements TutorialDataSource {
     await prefs.setString(_unlockedMapKey, jsonEncode(progress.latestUnlockedByUnit));
     await prefs.setInt(_streakKey, progress.streak);
     await prefs.setInt(_xpKey, progress.xp);
+    await prefs.setInt(_dailyXpKey, progress.dailyXp);
+    await prefs.setString(_lastActiveDateKey, progress.lastActiveDate);
+    await prefs.setInt(_heartsKey, progress.hearts);
   }
 
   @override

@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-enum NavTab { home, call, watch, tutorial, eeg, shop, settings }
+enum NavTab { home, call, tutorial, shop, settings }
 
 class LiquidGlassNavBar extends StatefulWidget {
   final NavTab currentTab;
@@ -19,15 +19,14 @@ class LiquidGlassNavBar extends StatefulWidget {
 class _LiquidGlassNavBarState extends State<LiquidGlassNavBar>
     with SingleTickerProviderStateMixin {
   late AnimationController _controller;
-  late Animation<double> _bubbleAnim;
+  late Animation<double> _scaleAnim;
+
   static const _tabs = [
-    (tab: NavTab.home,     icon: Icons.home_rounded,              label: 'Home'),
-    (tab: NavTab.call,     icon: Icons.call_rounded,              label: 'Call'),
-    (tab: NavTab.watch,    icon: Icons.sign_language_rounded,     label: 'Watch'),
-    (tab: NavTab.tutorial, icon: Icons.play_circle_outline_rounded, label: 'Tutorial'),
-    (tab: NavTab.eeg,      icon: Icons.psychology_rounded,        label: 'EEG'),
-    (tab: NavTab.shop,     icon: Icons.shopping_bag_rounded,      label: 'Shop'),
-    (tab: NavTab.settings, icon: Icons.settings_rounded,          label: 'Settings'),
+    (tab: NavTab.home,     icon: Icons.home_rounded,                 color: Color(0xFFE8433A)),
+    (tab: NavTab.call,     icon: Icons.phone_rounded,                color: Color(0xFF4CAF82)),
+    (tab: NavTab.tutorial, icon: Icons.play_lesson_rounded,          color: Color(0xFFB5651D)),
+    (tab: NavTab.shop,     icon: Icons.shopping_bag_rounded,         color: Color(0xFFD63384)),
+    (tab: NavTab.settings, icon: Icons.settings_rounded,             color: Color(0xFF9E9E9E)),
   ];
 
   @override
@@ -35,9 +34,9 @@ class _LiquidGlassNavBarState extends State<LiquidGlassNavBar>
     super.initState();
     _controller = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 380),
+      duration: const Duration(milliseconds: 320),
     );
-    _bubbleAnim = CurvedAnimation(parent: _controller, curve: Curves.easeOutBack);
+    _scaleAnim = CurvedAnimation(parent: _controller, curve: Curves.easeOutBack);
     _controller.value = 1.0;
   }
 
@@ -61,14 +60,9 @@ class _LiquidGlassNavBarState extends State<LiquidGlassNavBar>
 
     return Container(
       padding: EdgeInsets.only(bottom: bottomPad),
-      decoration: const BoxDecoration(
-        color: Color(0xFF1B1B20),
-        border: Border(
-          top: BorderSide(color: Color(0xFF2A2A32), width: 1),
-        ),
-      ),
+      color: const Color(0xFF1B1B20),
       child: SizedBox(
-        height: 64,
+        height: 80,
         child: Row(
           children: _tabs.map((t) {
             final isSelected = widget.currentTab == t.tab;
@@ -77,13 +71,18 @@ class _LiquidGlassNavBarState extends State<LiquidGlassNavBar>
                 onTap: () => widget.onTabChanged(t.tab),
                 behavior: HitTestBehavior.opaque,
                 child: AnimatedBuilder(
-                  animation: _bubbleAnim,
+                  animation: _scaleAnim,
                   builder: (context, _) {
-                    return _NavItem(
-                      icon: t.icon,
-                      label: t.label,
-                      isSelected: isSelected,
-                      animValue: isSelected ? _bubbleAnim.value : 1.0,
+                    final scale = isSelected ? (0.80 + 0.20 * _scaleAnim.value) : 1.0;
+                    return Center(
+                      child: Transform.scale(
+                        scale: scale,
+                        child: _NavItem(
+                          icon: t.icon,
+                          iconColor: t.color,
+                          isSelected: isSelected,
+                        ),
+                      ),
                     );
                   },
                 ),
@@ -98,66 +97,46 @@ class _LiquidGlassNavBarState extends State<LiquidGlassNavBar>
 
 class _NavItem extends StatelessWidget {
   final IconData icon;
-  final String label;
+  final Color iconColor;
   final bool isSelected;
-  final double animValue;
 
   const _NavItem({
     required this.icon,
-    required this.label,
+    required this.iconColor,
     required this.isSelected,
-    required this.animValue,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        AnimatedContainer(
-          duration: const Duration(milliseconds: 280),
-          curve: Curves.easeOutBack,
-          width: isSelected ? 52 : 40,
-          height: isSelected ? 36 : 32,
-          decoration: isSelected
-              ? BoxDecoration(
-                  borderRadius: BorderRadius.circular(18),
-                  color: const Color(0xFF58CC02),
-                  boxShadow: [
-                    BoxShadow(
-                      color: const Color(0xFF58CC02).withValues(alpha: 0.40),
-                      blurRadius: 10,
-                      spreadRadius: 0,
-                      offset: const Offset(0, 3),
-                    ),
-                  ],
-                )
-              : null,
-          child: Center(
-            child: Transform.scale(
-              scale: isSelected ? (0.85 + 0.15 * animValue) : 1.0,
-              child: Icon(
-                icon,
-                size: isSelected ? 20 : 22,
-                color: isSelected
-                    ? Colors.white
-                    : const Color(0xFF6B7280),
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 260),
+      curve: Curves.easeOutBack,
+      width: isSelected ? 72 : 52,
+      height: isSelected ? 72 : 52,
+      decoration: isSelected
+          ? BoxDecoration(
+              borderRadius: BorderRadius.circular(18),
+              color: const Color(0xFF252529),
+              border: Border.all(
+                color: const Color(0xFF4CAF50),
+                width: 3,
               ),
-            ),
-          ),
+              boxShadow: [
+                BoxShadow(
+                  color: const Color(0xFF4CAF50).withValues(alpha: 0.30),
+                  blurRadius: 14,
+                  spreadRadius: 1,
+                ),
+              ],
+            )
+          : null,
+      child: Center(
+        child: Icon(
+          icon,
+          size: isSelected ? 40 : 34,
+          color: isSelected ? iconColor : iconColor.withValues(alpha: 0.55),
         ),
-        const SizedBox(height: 3),
-        AnimatedDefaultTextStyle(
-          duration: const Duration(milliseconds: 220),
-          style: TextStyle(
-            fontSize: isSelected ? 10 : 9.5,
-            fontWeight: isSelected ? FontWeight.w700 : FontWeight.w400,
-            color: isSelected ? Colors.white : const Color(0xFF6B7280),
-            letterSpacing: isSelected ? 0.3 : 0,
-          ),
-          child: Text(label),
-        ),
-      ],
+      ),
     );
   }
 }

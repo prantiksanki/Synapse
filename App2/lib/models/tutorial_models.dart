@@ -35,12 +35,18 @@ class TutorialProgress {
   final Map<String, int> latestUnlockedByUnit;
   final int streak;
   final int xp;
+  final int dailyXp;
+  final String lastActiveDate; // 'YYYY-MM-DD'
+  final int hearts; // max 5
 
   const TutorialProgress({
     required this.completedLessonIds,
     required this.latestUnlockedByUnit,
     required this.streak,
     required this.xp,
+    required this.dailyXp,
+    required this.lastActiveDate,
+    required this.hearts,
   });
 
   factory TutorialProgress.initial() {
@@ -49,6 +55,9 @@ class TutorialProgress {
       latestUnlockedByUnit: {},
       streak: 0,
       xp: 0,
+      dailyXp: 0,
+      lastActiveDate: '',
+      hearts: 5,
     );
   }
 
@@ -57,12 +66,18 @@ class TutorialProgress {
     Map<String, int>? latestUnlockedByUnit,
     int? streak,
     int? xp,
+    int? dailyXp,
+    String? lastActiveDate,
+    int? hearts,
   }) {
     return TutorialProgress(
       completedLessonIds: completedLessonIds ?? this.completedLessonIds,
       latestUnlockedByUnit: latestUnlockedByUnit ?? this.latestUnlockedByUnit,
       streak: streak ?? this.streak,
       xp: xp ?? this.xp,
+      dailyXp: dailyXp ?? this.dailyXp,
+      lastActiveDate: lastActiveDate ?? this.lastActiveDate,
+      hearts: hearts ?? this.hearts,
     );
   }
 }

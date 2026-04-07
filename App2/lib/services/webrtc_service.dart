@@ -27,8 +27,8 @@ class DeafWebRtcService {
   VoidCallback? onCallEnded;
   void Function(MediaStream stream)? onLocalStream;
   void Function(MediaStream stream)? onRemoteStream;
-  /// Called when the remote participant relayed a signed sentence for TTS.
-  void Function(String text)? onSignSpeechReceived;
+  /// Called when the remote participant sends a sign panel item to display.
+  void Function(String gifPath, String label)? onSignPanelReceived;
 
   List<Map<String, dynamic>> onlineUsers = [];
   bool get isConnected => _isConnected;
@@ -174,12 +174,13 @@ class DeafWebRtcService {
       onCallEnded?.call();
     });
 
-    // ── Sign speech relay — deaf user's signed text arrives here on caller side ─
-    _socket!.on('sign_speech', (data) {
+    // ── Sign panel item — remote participant selected a sign to show ──────────
+    _socket!.on('sign_panel_item', (data) {
       final d = Map<String, dynamic>.from(data as Map);
-      final text = d['text'] as String?;
-      if (text != null && text.isNotEmpty) {
-        onSignSpeechReceived?.call(text);
+      final gifPath = d['gifPath'] as String?;
+      final label   = d['label']   as String?;
+      if (gifPath != null && label != null) {
+        onSignPanelReceived?.call(gifPath, label);
       }
     });
   }
@@ -206,11 +207,15 @@ class DeafWebRtcService {
     _currentCallId = null;
   }
 
-  // ── Send signed sentence to remote participant for TTS playback ───────────
-  void sendSignSpeech(String text) {
+  // ── Send sign panel item to remote participant ────────────────────────────
+  void sendSignPanelItem(String gifPath, String label) {
     if (_currentCallId == null || _socket == null) return;
-    _socket!.emit('sign_speech', {'callId': _currentCallId, 'text': text});
-    debugPrint('[WebRTC] sign_speech sent: $text');
+    _socket!.emit('sign_panel_item', {
+      'callId': _currentCallId,
+      'gifPath': gifPath,
+      'label': label,
+    });
+    debugPrint('[WebRTC] sign_panel_item sent: $label');
   }
 
   // ── End active call ────────────────────────────────────────────────────────
@@ -338,8 +343,11 @@ class DeafWebRtcService {
 
     _pc!.onConnectionState = (state) {
       debugPrint('[WebRTC] Connection: $state');
-      if (state == RTCPeerConnectionState.RTCPeerConnectionStateDisconnected ||
-          state == RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
+      // RTCPeerConnectionStateDisconnected is transient — WebRTC often recovers
+      // automatically (e.g. brief network switch). Only treat 'failed' and
+      // 'closed' as unrecoverable so we don't end calls on momentary drops.
+      if (state == RTCPeerConnectionState.RTCPeerConnectionStateFailed ||
+          state == RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
         _cleanupPeer();
         onCallEnded?.call();
       }

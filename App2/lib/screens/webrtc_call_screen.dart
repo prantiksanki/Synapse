@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -6,7 +7,7 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/webrtc_provider.dart';
-import '../services/sign_image_service.dart';
+import '../widgets/sign_language_panel.dart';
 
 class WebRtcCallScreen extends StatefulWidget {
   const WebRtcCallScreen({super.key});
@@ -32,19 +33,23 @@ class _WebRtcCallScreenState extends State<WebRtcCallScreen>
   final List<int> _frameTimes = [];
   bool _perfVisible = false;
 
+  // Received sign overlay state
+  bool _signOverlayVisible = false;
+  ReceivedSignItem? _overlaySign;
+  Timer? _signOverlayTimer;
+
   @override
   void initState() {
     super.initState();
 
-    // Waveform ticker — fires every vsync but we gate to ~12 fps internally.
     _waveTicker = createTicker(_onWaveTick)..start();
-
-    // FPS ticker — separate, same gate.
     WidgetsBinding.instance.addPersistentFrameCallback(_onFrame);
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      context.read<WebRtcProvider>().addListener(_onWebRtcChanged);
+      final provider = context.read<WebRtcProvider>();
+      provider.addListener(_onWebRtcChanged);
+      provider.receivedSignNotifier.addListener(_onReceivedSign);
     });
   }
 
@@ -61,7 +66,6 @@ class _WebRtcCallScreenState extends State<WebRtcCallScreen>
     _frameTimes.add(ms);
     _frameCount++;
     if (ms - _lastFpsMs >= 1000) {
-      // Keep only last 60 frame timestamps for render-time calculation.
       if (_frameTimes.length > 60) _frameTimes.removeRange(0, _frameTimes.length - 60);
       if (mounted) {
         setState(() {
@@ -76,11 +80,27 @@ class _WebRtcCallScreenState extends State<WebRtcCallScreen>
     }
   }
 
+  void _onReceivedSign() {
+    if (!mounted) return;
+    final item = context.read<WebRtcProvider>().receivedSignNotifier.value;
+    if (item == null) return;
+    _signOverlayTimer?.cancel();
+    setState(() {
+      _overlaySign = item;
+      _signOverlayVisible = true;
+    });
+    _signOverlayTimer = Timer(const Duration(milliseconds: 3500), () {
+      if (mounted) setState(() => _signOverlayVisible = false);
+    });
+  }
+
   @override
   void dispose() {
     _waveTicker.dispose();
-    WidgetsBinding.instance.cancelFrameCallbackWithId(0); // no-op; cleanup via mounted check
-    context.read<WebRtcProvider>().removeListener(_onWebRtcChanged);
+    _signOverlayTimer?.cancel();
+    final provider = context.read<WebRtcProvider>();
+    provider.removeListener(_onWebRtcChanged);
+    provider.receivedSignNotifier.removeListener(_onReceivedSign);
     super.dispose();
   }
 
@@ -93,7 +113,6 @@ class _WebRtcCallScreenState extends State<WebRtcCallScreen>
     }
   }
 
-  // ── Average frame render time from recent timestamps ─────────────────────
   double _avgFrameMs() {
     if (_frameTimes.length < 2) return 0;
     final deltas = <int>[];
@@ -103,12 +122,33 @@ class _WebRtcCallScreenState extends State<WebRtcCallScreen>
     return deltas.reduce((a, b) => a + b) / deltas.length;
   }
 
+  void _openSignPanel(BuildContext ctx, WebRtcProvider provider) {
+    showModalBottomSheet<void>(
+      context: ctx,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (sheetCtx) => SignLanguagePanel(
+        onSignSelected: (gifPath, label) {
+          // Use the modal's own context to pop only the bottom sheet,
+          // not the outer call screen.
+          Navigator.of(sheetCtx).pop();
+          provider.sendSign(gifPath, label);
+          ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
+            content: Text('Sent: $label'),
+            duration: const Duration(seconds: 1),
+            behavior: SnackBarBehavior.floating,
+            backgroundColor: const Color(0xFF25D366),
+          ));
+        },
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    // Read once — these are stable for the lifetime of the call.
     final webRtc = context.read<WebRtcProvider>();
     final isVideo = webRtc.currentCallType == 'video';
-    final name = webRtc.callerUsername ?? 'Vaani User';
+    final name = webRtc.callerUsername ?? 'Synapse User';
     final avatarLetter = name.isEmpty ? '?' : name[0].toUpperCase();
 
     return Scaffold(
@@ -127,7 +167,7 @@ class _WebRtcCallScreenState extends State<WebRtcCallScreen>
             ),
           ),
 
-          // Gradient scrim — const, never rebuilds
+          // Gradient scrim
           const Positioned.fill(
             child: DecoratedBox(
               decoration: BoxDecoration(
@@ -148,51 +188,18 @@ class _WebRtcCallScreenState extends State<WebRtcCallScreen>
           SafeArea(
             child: Column(
               children: [
-                // Timer reads from ValueNotifier — zero provider rebuilds.
                 _CallTopBar(
                   name: name,
                   durationNotifier: webRtc.callDurationNotifier,
                   isRemoteListening: webRtc.isRemoteListening,
                 ),
 
-                if (isVideo && webRtc.userRole == 'deaf')
-                  Container(
-                    margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: Colors.orange.withValues(alpha: 0.18),
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(
-                          color: Colors.orange.withValues(alpha: 0.4)),
-                    ),
-                    child: const Row(
-                      children: [
-                        Icon(Icons.info_outline,
-                            color: Colors.orange, size: 15),
-                        SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            'Video call: camera is used for video. '
-                            'Switch to audio call for sign detection.',
-                            style: TextStyle(
-                                color: Colors.orange,
-                                fontSize: 11.5,
-                                height: 1.4),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-
                 const Spacer(),
 
-                // Conversion sheet: transcript + signs both via ValueNotifier.
-                _ConversionSheet(
+                // Live transcript sheet
+                _TranscriptSheet(
                   expanded: _sheetExpanded,
                   transcriptNotifier: webRtc.transcriptNotifier,
-                  signSegmentsNotifier: webRtc.signSegmentsNotifier,
-                  userRole: webRtc.userRole,
                   onToggle: () =>
                       setState(() => _sheetExpanded = !_sheetExpanded),
                 ),
@@ -213,6 +220,7 @@ class _WebRtcCallScreenState extends State<WebRtcCallScreen>
                     onVideoTap: webRtc.toggleVideo,
                     onSwitchCameraTap: webRtc.switchCamera,
                     onEndTap: webRtc.endCall,
+                    onSignTap: () => _openSignPanel(context, webRtc),
                   ),
                 ),
 
@@ -228,6 +236,25 @@ class _WebRtcCallScreenState extends State<WebRtcCallScreen>
               right: 14,
               child: RepaintBoundary(
                 child: _LocalPip(renderer: webRtc.localRenderer),
+              ),
+            ),
+
+          // ── Received sign overlay — appears for 3.5s then fades ─────────
+          if (_overlaySign != null)
+            Positioned.fill(
+              child: IgnorePointer(
+                child: AnimatedOpacity(
+                  duration: const Duration(milliseconds: 400),
+                  opacity: _signOverlayVisible ? 1.0 : 0.0,
+                  onEnd: () {
+                    if (!_signOverlayVisible && mounted) {
+                      setState(() => _overlaySign = null);
+                    }
+                  },
+                  child: Center(
+                    child: _ReceivedSignCard(sign: _overlaySign!),
+                  ),
+                ),
               ),
             ),
 
@@ -250,7 +277,7 @@ class _WebRtcCallScreenState extends State<WebRtcCallScreen>
   }
 }
 
-// ── Video background — stable StatelessWidget inside RepaintBoundary ─────────
+// ── Video background ──────────────────────────────────────────────────────────
 
 class _VideoBackground extends StatelessWidget {
   final RTCVideoRenderer renderer;
@@ -271,7 +298,7 @@ class _VideoBackground extends StatelessWidget {
   }
 }
 
-// ── Audio background — waveProgress passed in, no provider access ─────────────
+// ── Audio background ──────────────────────────────────────────────────────────
 
 class _AudioBackground extends StatelessWidget {
   final String avatarLetter;
@@ -305,10 +332,7 @@ class _AudioBackground extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 26),
-            // RepaintBoundary isolates waveform from avatar/background repaints.
-            RepaintBoundary(
-              child: _Waveform(progress: waveProgress),
-            ),
+            RepaintBoundary(child: _Waveform(progress: waveProgress)),
           ],
         ),
       ),
@@ -316,7 +340,7 @@ class _AudioBackground extends StatelessWidget {
   }
 }
 
-// ── Top bar — uses ValueListenableBuilder for timer; never reads provider ─────
+// ── Top bar ───────────────────────────────────────────────────────────────────
 
 class _CallTopBar extends StatelessWidget {
   final String name;
@@ -337,9 +361,6 @@ class _CallTopBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final badgeText =
-        isRemoteListening ? 'Listening to caller' : 'Live translation on';
-
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
       child: Column(
@@ -353,7 +374,6 @@ class _CallTopBar extends StatelessWidget {
           const SizedBox(height: 4),
           Row(
             children: [
-              // Only the timer text rebuilds — rest is static.
               ValueListenableBuilder<Duration>(
                 valueListenable: durationNotifier,
                 builder: (_, dur, __) => Text(
@@ -363,21 +383,22 @@ class _CallTopBar extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 10),
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF25D366).withValues(alpha: 0.18),
-                  borderRadius: BorderRadius.circular(16),
+              if (isRemoteListening)
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF25D366).withValues(alpha: 0.18),
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: const Text(
+                    'Live transcript on',
+                    style: TextStyle(
+                        color: Color(0xFF9CFCC2),
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600),
+                  ),
                 ),
-                child: Text(
-                  badgeText,
-                  style: const TextStyle(
-                      color: Color(0xFF9CFCC2),
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600),
-                ),
-              ),
             ],
           ),
         ],
@@ -411,27 +432,21 @@ class _LocalPip extends StatelessWidget {
   }
 }
 
-// ── Conversion sheet — reads only ValueNotifiers, zero provider rebuilds ──────
+// ── Transcript sheet ──────────────────────────────────────────────────────────
 
-class _ConversionSheet extends StatelessWidget {
+class _TranscriptSheet extends StatelessWidget {
   final bool expanded;
   final ValueNotifier<String> transcriptNotifier;
-  final ValueNotifier<List<SignImageSegment>> signSegmentsNotifier;
-  final String userRole;
   final VoidCallback onToggle;
 
-  const _ConversionSheet({
+  const _TranscriptSheet({
     required this.expanded,
     required this.transcriptNotifier,
-    required this.signSegmentsNotifier,
-    required this.userRole,
     required this.onToggle,
   });
 
   @override
   Widget build(BuildContext context) {
-    final isDeaf = userRole == 'deaf';
-
     return AnimatedContainer(
       duration: const Duration(milliseconds: 250),
       curve: Curves.easeOut,
@@ -452,7 +467,7 @@ class _ConversionSheet extends StatelessWidget {
               padding: const EdgeInsets.symmetric(vertical: 2),
               child: Row(
                 children: [
-                  const Text('Live Conversion',
+                  const Text('Live Transcript',
                       style: TextStyle(
                           color: Colors.white,
                           fontSize: 15,
@@ -470,107 +485,39 @@ class _ConversionSheet extends StatelessWidget {
           ),
           if (expanded) ...[
             const SizedBox(height: 8),
-            // Transcript text — ValueListenableBuilder, no provider rebuild.
             ValueListenableBuilder<String>(
               valueListenable: transcriptNotifier,
-              builder: (_, transcript, __) => _ConversionCard(
-                title: isDeaf ? 'Caller said' : 'You said',
-                subtitle: transcript.isEmpty
-                    ? (isDeaf
-                        ? 'Listening to caller…'
-                        : 'Speak to be translated…')
-                    : transcript,
-                // Sign strip reads its own notifier internally.
-                child: _SignStrip(notifier: signSegmentsNotifier),
+              builder: (_, transcript, __) => Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1F2C34),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('Other person said',
+                        style: TextStyle(
+                            color: Color(0xFF8696A0),
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700)),
+                    const SizedBox(height: 4),
+                    Text(
+                      transcript.isEmpty
+                          ? 'Listening for speech…'
+                          : transcript,
+                      style: const TextStyle(color: Colors.white, fontSize: 13),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
               ),
             ),
           ],
         ],
       ),
-    );
-  }
-}
-
-class _ConversionCard extends StatelessWidget {
-  final String title;
-  final String subtitle;
-  final Widget child;
-
-  const _ConversionCard({
-    required this.title,
-    required this.subtitle,
-    required this.child,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(
-        color: const Color(0xFF1F2C34),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(title,
-              style: const TextStyle(
-                  color: Color(0xFF8696A0),
-                  fontSize: 11,
-                  fontWeight: FontWeight.w700)),
-          const SizedBox(height: 4),
-          Text(subtitle,
-              style: const TextStyle(color: Colors.white, fontSize: 13),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis),
-          child,
-        ],
-      ),
-    );
-  }
-}
-
-// ── Sign strip — reads ValueNotifier directly ────────────────────────────────
-
-class _SignStrip extends StatelessWidget {
-  final ValueNotifier<List<SignImageSegment>> notifier;
-  const _SignStrip({required this.notifier});
-
-  @override
-  Widget build(BuildContext context) {
-    return ValueListenableBuilder<List<SignImageSegment>>(
-      valueListenable: notifier,
-      builder: (_, segments, __) {
-        if (segments.isEmpty) return const SizedBox.shrink();
-        return SizedBox(
-          height: 44,
-          child: ListView.separated(
-            padding: const EdgeInsets.only(top: 8),
-            scrollDirection: Axis.horizontal,
-            itemCount: segments.length,
-            separatorBuilder: (_, __) => const SizedBox(width: 6),
-            itemBuilder: (_, i) {
-              final seg = segments[i];
-              if (seg.isWordSpace) return const SizedBox(width: 12);
-              if (seg.imageBytes == null) return const SizedBox.shrink();
-              return Container(
-                width: 34,
-                height: 34,
-                decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(6)),
-                padding: const EdgeInsets.all(2),
-                child: Image.memory(
-                  seg.imageBytes!,
-                  fit: BoxFit.contain,
-                  filterQuality: FilterQuality.low,
-                ),
-              );
-            },
-          ),
-        );
-      },
     );
   }
 }
@@ -587,6 +534,7 @@ class _CallControlDock extends StatelessWidget {
   final VoidCallback onVideoTap;
   final VoidCallback onSwitchCameraTap;
   final VoidCallback onEndTap;
+  final VoidCallback onSignTap;
 
   const _CallControlDock({
     required this.isMuted,
@@ -598,6 +546,7 @@ class _CallControlDock extends StatelessWidget {
     required this.onVideoTap,
     required this.onSwitchCameraTap,
     required this.onEndTap,
+    required this.onSignTap,
   });
 
   @override
@@ -629,6 +578,10 @@ class _CallControlDock extends StatelessWidget {
                 icon: Icons.cameraswitch,
                 active: false,
                 onTap: onSwitchCameraTap),
+          _DockButton(
+              icon: Icons.sign_language,
+              active: false,
+              onTap: onSignTap),
           _DockButton(
               icon: Icons.call_end,
               active: true,
@@ -670,7 +623,73 @@ class _DockButton extends StatelessWidget {
   }
 }
 
-// ── Waveform — pure, receives progress as param, ~12fps from parent ───────────
+// ── Received sign overlay card ────────────────────────────────────────────────
+
+class _ReceivedSignCard extends StatelessWidget {
+  final ReceivedSignItem sign;
+  const _ReceivedSignCard({required this.sign});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 200,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF111B21).withValues(alpha: 0.95),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFF25D366), width: 1.5),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.5),
+            blurRadius: 20,
+            spreadRadius: 2,
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text(
+            'Sign received',
+            style: TextStyle(
+              color: Color(0xFF25D366),
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 0.5,
+            ),
+          ),
+          const SizedBox(height: 10),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: Image.asset(
+              sign.gifPath,
+              width: 140,
+              height: 140,
+              fit: BoxFit.contain,
+              errorBuilder: (_, __, ___) => const SizedBox(
+                width: 140,
+                height: 140,
+                child: Icon(Icons.sign_language,
+                    color: Color(0xFF25D366), size: 60),
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            sign.label,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 18,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Waveform ──────────────────────────────────────────────────────────────────
 
 class _Waveform extends StatelessWidget {
   final double progress;
@@ -692,8 +711,7 @@ class _Waveform extends StatelessWidget {
                   width: 4,
                   height: 20 + 36 * h,
                   decoration: BoxDecoration(
-                    color:
-                        const Color(0xFF25D366).withValues(alpha: 0.85),
+                    color: const Color(0xFF25D366).withValues(alpha: 0.85),
                     borderRadius: BorderRadius.circular(8),
                   ),
                 ),
@@ -718,7 +736,6 @@ class _PerfOverlay extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Always render the tap-target dot; expand to show stats when visible.
     final bool lagDetected = fps > 0 && fps < 24;
 
     return Container(
@@ -758,7 +775,9 @@ class _PerfOverlay extends StatelessWidget {
             style: const TextStyle(color: Colors.white54, fontSize: 10)),
         Text(value,
             style: TextStyle(
-                color: valueColor, fontSize: 10, fontWeight: FontWeight.bold)),
+                color: valueColor,
+                fontSize: 10,
+                fontWeight: FontWeight.bold)),
       ],
     );
   }

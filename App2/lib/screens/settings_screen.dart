@@ -296,10 +296,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
       trailing: Switch(
         value: value,
         onChanged: onChanged,
-        activeThumbColor: AppConfig.obPrimary,
-        activeTrackColor: AppConfig.obBorder,
-        inactiveThumbColor: AppConfig.obTextSecondary,
-        inactiveTrackColor: AppConfig.obBorder,
+        thumbColor: WidgetStateProperty.resolveWith((states) {
+          if (states.contains(WidgetState.selected)) {
+            return AppConfig.obPrimary;
+          }
+          return AppConfig.obTextSecondary;
+        }),
+        trackColor: WidgetStateProperty.resolveWith((states) {
+          return AppConfig.obBorder;
+        }),
       ),
     );
   }

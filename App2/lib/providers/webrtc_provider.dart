@@ -4,12 +4,17 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import '../providers/detection_provider.dart';
-import '../services/sign_image_service.dart';
 import '../services/speech_service.dart';
 import '../services/webrtc_service.dart';
 
 enum WebRtcCallStatus { idle, ringing, active, ended }
+
+/// Holds the data for a sign received from (or sent to) the remote participant.
+class ReceivedSignItem {
+  final String gifPath;
+  final String label;
+  const ReceivedSignItem(this.gifPath, this.label);
+}
 
 /// Orchestrates WebRTC calls for both deaf and caller roles.
 ///
@@ -19,9 +24,8 @@ enum WebRtcCallStatus { idle, ringing, active, ended }
 ///   widget rebuilds — NOT the entire provider tree (no notifyListeners).
 /// - [transcriptNotifier] is a ValueNotifier updated on every STT partial.
 ///   Only the transcript text widget rebuilds; the video renderer is untouched.
-/// - Sign translation runs via [processCallerSpeech] which internally awaits
-///   only keyword extraction (fast, sync) — T5 grammar is skipped during calls
-///   to avoid blocking the UI event loop.
+/// - [receivedSignNotifier] is a ValueNotifier updated when a sign panel item
+///   arrives from the remote participant; the overlay widget subscribes to it.
 /// - notifyListeners() is called only for genuine call-state transitions
 ///   (ringing → active → ended, mute/speaker toggles, user list changes).
 class WebRtcProvider extends ChangeNotifier {
@@ -42,21 +46,17 @@ class WebRtcProvider extends ChangeNotifier {
   Timer? _callTimer;
   bool _startingRemoteStt = false;
 
-  DetectionProvider? _detection;
-
   // ── Zero-rebuild notifiers ─────────────────────────────────────────────────
   /// Updated every second without calling notifyListeners().
-  /// Widgets that only need the timer subscribe to this directly.
   final ValueNotifier<Duration> callDurationNotifier =
       ValueNotifier(Duration.zero);
 
   /// Updated on every STT partial result without calling notifyListeners().
-  /// Only the transcript text widget subscribes to this.
   final ValueNotifier<String> transcriptNotifier = ValueNotifier('');
 
-  /// Updated when a final STT result produces sign segments.
-  final ValueNotifier<List<SignImageSegment>> signSegmentsNotifier =
-      ValueNotifier([]);
+  /// Updated when a sign panel item arrives from the remote participant.
+  final ValueNotifier<ReceivedSignItem?> receivedSignNotifier =
+      ValueNotifier(null);
 
   // ── Renderers ──────────────────────────────────────────────────────────────
   final RTCVideoRenderer localRenderer = RTCVideoRenderer();
@@ -76,10 +76,7 @@ class WebRtcProvider extends ChangeNotifier {
   bool get isSpeakerOn => _isSpeakerOn;
   bool get isVideoEnabled => _isVideoEnabled;
 
-  // Legacy getters kept for call screen compatibility (backed by notifiers now)
   String get remoteTranscript => transcriptNotifier.value;
-  List<SignImageSegment> get translatedSignSegments =>
-      signSegmentsNotifier.value;
 
   bool get isRemoteListening => _remoteStt.isListening;
 
@@ -117,25 +114,12 @@ class WebRtcProvider extends ChangeNotifier {
       _isVideoEnabled = _service.isVideoEnabled;
       callDurationNotifier.value = Duration.zero;
       _startCallTimer();
-
-      if (callType == 'video') {
-        _detection?.enterCallModeVideoOnly();
-      } else {
-        _detection?.enterCallMode();
-      }
       unawaited(_startRemoteStt());
-
       notifyListeners(); // one notify: state → active
     };
 
     _service.onCallEnded = () {
-      final wasVideo = _currentCallType == 'video';
       _status = WebRtcCallStatus.ended;
-      _detection?.exitCallMode();
-      _detection?.onSentenceForCall = null;
-      if (wasVideo && _userRole == 'deaf' && _detection != null) {
-        unawaited(_detection!.restoreCameraAfterWebRtc());
-      }
       unawaited(_stopRemoteStt());
       _stopCallTimer();
       notifyListeners(); // one notify: state → ended
@@ -151,6 +135,10 @@ class WebRtcProvider extends ChangeNotifier {
       remoteRenderer.srcObject = stream;
       notifyListeners();
     };
+
+    _service.onSignPanelReceived = (gifPath, label) {
+      receivedSignNotifier.value = ReceivedSignItem(gifPath, label);
+    };
   }
 
   // ── Call timer — ValueNotifier, no notifyListeners() ──────────────────────
@@ -158,7 +146,6 @@ class WebRtcProvider extends ChangeNotifier {
     _callTimer?.cancel();
     _callTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (_status != WebRtcCallStatus.active) return;
-      // Increment ValueNotifier directly — zero provider rebuilds.
       callDurationNotifier.value += const Duration(seconds: 1);
     });
   }
@@ -189,14 +176,9 @@ class WebRtcProvider extends ChangeNotifier {
       _remoteStt.onResult = (text, isFinal) {
         // Update ValueNotifier only — NO notifyListeners(), NO video rebuild.
         transcriptNotifier.value = text;
-
-        if (!isFinal || text.trim().isEmpty) return;
-        // Fire-and-forget sign translation; runs async, never blocks video.
-        unawaited(_updateSignTranslation(text));
       };
 
       _remoteStt.onStopped = () {
-        // No notifyListeners here either — isRemoteListening badge uses Selector.
         if (_status == WebRtcCallStatus.active) {
           Future.delayed(const Duration(seconds: 2), () {
             if (_status == WebRtcCallStatus.active) {
@@ -219,22 +201,7 @@ class WebRtcProvider extends ChangeNotifier {
     await _remoteStt.stopListening();
   }
 
-  // ── Sign translation — async, never blocks video ───────────────────────────
-  Future<void> _updateSignTranslation(String text) async {
-    if (_detection == null || _userRole != 'deaf') return;
-    // processCallerSpeech is async (may await T5 grammar).
-    // Result goes to ValueNotifier — zero provider rebuilds.
-    await _detection!.processCallerSpeech(text);
-    signSegmentsNotifier.value =
-        List<SignImageSegment>.from(_detection!.signImageSegments);
-  }
-
   // ── Public API ─────────────────────────────────────────────────────────────
-
-  void setDetectionProvider(DetectionProvider detection) {
-    if (_detection == detection) return;
-    _detection = detection;
-  }
 
   Future<void> connectFromPrefs() async {
     final prefs = await SharedPreferences.getInstance();
@@ -270,9 +237,6 @@ class WebRtcProvider extends ChangeNotifier {
 
   Future<void> acceptCall() async {
     if (_pendingCallId == null) return;
-    if (_currentCallType == 'video' && _detection != null) {
-      await _detection!.releaseCameraForWebRtc();
-    }
     await _service.acceptCall(_pendingCallId!);
     _pendingCallId = null;
   }
@@ -287,16 +251,17 @@ class WebRtcProvider extends ChangeNotifier {
   }
 
   void endCall() {
-    final wasVideo = _currentCallType == 'video';
     _service.endCall();
-    _detection?.exitCallMode();
-    _detection?.onSentenceForCall = null;
-    if (wasVideo && _userRole == 'deaf' && _detection != null) {
-      unawaited(_detection!.restoreCameraAfterWebRtc());
-    }
     unawaited(_stopRemoteStt());
     _stopCallTimer();
     _resetAfterCall();
+  }
+
+  /// Sends a sign GIF to the remote participant and mirrors it locally
+  /// so the sender gets immediate visual feedback.
+  void sendSign(String gifPath, String label) {
+    _service.sendSignPanelItem(gifPath, label);
+    receivedSignNotifier.value = ReceivedSignItem(gifPath, label);
   }
 
   Future<void> toggleMute() async {
@@ -329,7 +294,7 @@ class WebRtcProvider extends ChangeNotifier {
     _isVideoEnabled = true;
     callDurationNotifier.value = Duration.zero;
     transcriptNotifier.value = '';
-    signSegmentsNotifier.value = [];
+    receivedSignNotifier.value = null;
     notifyListeners();
   }
 
@@ -338,7 +303,7 @@ class WebRtcProvider extends ChangeNotifier {
     _callTimer?.cancel();
     callDurationNotifier.dispose();
     transcriptNotifier.dispose();
-    signSegmentsNotifier.dispose();
+    receivedSignNotifier.dispose();
     unawaited(_remoteStt.stopListening());
     _remoteStt.dispose();
     localRenderer.dispose();

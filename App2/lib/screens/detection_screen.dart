@@ -8,15 +8,12 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../config/app_config.dart';
 import '../providers/call_bridge_provider.dart';
 import '../providers/detection_provider.dart';
-import '../providers/watch_mode_provider.dart';
 import '../providers/webrtc_provider.dart';
 import '../screens/deaf_call_screen.dart';
-import '../screens/eeg_screen.dart';
 import '../screens/shop_screen.dart';
 import '../screens/incoming_call_screen.dart';
 import '../screens/settings_screen.dart';
 import '../screens/tutorial_screen.dart';
-import '../screens/watch_screen.dart';
 import '../screens/webrtc_call_screen.dart';
 import '../services/call_bridge_service.dart';
 import '../widgets/gesture_display.dart';
@@ -261,17 +258,6 @@ class _DetectionScreenState extends State<DetectionScreen>
           .whenComplete(() {
         if (mounted) setState(() => _currentTab = NavTab.home);
       });
-    } else if (tab == NavTab.watch) {
-      Navigator.of(context)
-          .push(MaterialPageRoute(
-            builder: (_) => ChangeNotifierProvider(
-              create: (_) => WatchModeProvider(),
-              child: const WatchScreen(),
-            ),
-          ))
-          .whenComplete(() {
-        if (mounted) setState(() => _currentTab = NavTab.home);
-      });
     } else if (tab == NavTab.settings) {
       Navigator.of(context)
           .push(MaterialPageRoute(builder: (_) => const SettingsScreen()))
@@ -281,12 +267,6 @@ class _DetectionScreenState extends State<DetectionScreen>
     } else if (tab == NavTab.tutorial) {
       Navigator.of(context)
           .push(MaterialPageRoute(builder: (_) => const TutorialScreen()))
-          .whenComplete(() {
-        if (mounted) setState(() => _currentTab = NavTab.home);
-      });
-    } else if (tab == NavTab.eeg) {
-      Navigator.of(context)
-          .push(MaterialPageRoute(builder: (_) => const EegScreen()))
           .whenComplete(() {
         if (mounted) setState(() => _currentTab = NavTab.home);
       });
