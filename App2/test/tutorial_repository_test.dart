@@ -13,7 +13,7 @@ void main() {
       random: Random(7),
       loadString: (path) async {
         if (path == 'AssetManifest.json') {
-          return '''
+          return ''']
           {
             "assets/sign_videos/Hello.gif": [],
             "assets/sign_videos/Water.gif": [],

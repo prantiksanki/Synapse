@@ -257,11 +257,9 @@ class WebRtcProvider extends ChangeNotifier {
     _resetAfterCall();
   }
 
-  /// Sends a sign GIF to the remote participant and mirrors it locally
-  /// so the sender gets immediate visual feedback.
+  /// Sends a sign GIF to the remote participant.
   void sendSign(String gifPath, String label) {
     _service.sendSignPanelItem(gifPath, label);
-    receivedSignNotifier.value = ReceivedSignItem(gifPath, label);
   }
 
   Future<void> toggleMute() async {
