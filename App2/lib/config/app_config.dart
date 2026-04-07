@@ -57,8 +57,10 @@ class AppConfig {
 
   static const String t5ModelSizeLabel = '~95 MB';
 
-  // Hardware device (Raspberry Pi)
-  // Pi creates a hotspot — its gateway IP is always 192.168.4.1
+  // Hardware device (Raspberry Pi) — aiohttp + aiortc server on port 8080
+  static const String hwBaseUrl = 'http://192.168.0.102:8080';
+  static const String hwOfferUrl = '$hwBaseUrl/offer';
+  // Legacy Socket.IO URL kept for reference; no longer used.
   static const String hwSocketUrl = 'http://192.168.0.102:5000';
   static const String hwSsid = 'VAANI';
   static const String hwDeviceName = 'VAANI-HW';

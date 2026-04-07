@@ -1,23 +1,24 @@
-﻿import 'dart:async';
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
-import 'package:socket_io_client/socket_io_client.dart' as socket_io;
+import 'package:http/http.dart' as http;
 
 import '../config/app_config.dart';
 import '../models/connection_state.dart';
 import '../models/hw_info.dart';
 
-/// SYNAPSE Hardware Service - WebRTC edition aligned with `files/server.py`.
+/// SYNAPSE Hardware Service — aligned with the aiohttp + aiortc Pi server.
 ///
-/// Socket.IO is used only for signalling and health events:
-///   offer/answer/ice_candidate, hw_info, ping_hw/pong_hw, hw_error.
+/// Signalling: single HTTP POST /offer (SDP offer → SDP answer, no Socket.IO).
+/// Media (WebRTC):
+///   Pi → App : camera video (v4l2) + mic audio (PyAudio)
+///   App → Pi : phone mic audio
 ///
-/// WebRTC carries media + data:
-///   Pi -> App: camera video + mic audio
-///   App -> Pi: phone mic audio + DataChannel('screen') text
+/// No DataChannel in the new server — updateScreen / speak are retained as
+/// no-ops so callers compile without change.
 class HardwareService {
   static HardwareService? _instance;
 
@@ -28,23 +29,24 @@ class HardwareService {
 
   HardwareService._internal();
 
-  socket_io.Socket? _socket;
+  // ---------------------------------------------------------------------------
+  // State
+  // ---------------------------------------------------------------------------
+
   Timer? _retryTimer;
   Timer? _pingTimer;
-  int _pingTimestamp = 0;
   Duration _retryDelay = const Duration(seconds: 3);
   static const Duration _maxRetryDelay = Duration(seconds: 30);
   StreamSubscription<List<ConnectivityResult>>? _connectivitySub;
 
   RTCPeerConnection? _pc;
-  RTCDataChannel? _screenChannel;
   MediaStream? _localStream;
 
-  /// Pi camera renderer target for WebRTC UI screens.
+  /// Pi camera + mic renderer target for WebRTC UI screens.
   final RTCVideoRenderer remoteVideoRenderer = RTCVideoRenderer();
   bool _rendererInitialized = false;
 
-  /// Legacy compatibility shims. These are intentionally unused in WebRTC mode.
+  /// Legacy frame / audio callbacks — kept for API compatibility, never called.
   void Function(Uint8List jpeg)? onFrame;
   void Function(Uint8List pcm)? onAudio;
 
@@ -53,6 +55,10 @@ class HardwareService {
 
   bool _disposed = false;
   bool _connecting = false;
+
+  // ---------------------------------------------------------------------------
+  // Public API
+  // ---------------------------------------------------------------------------
 
   Future<void> connect() async {
     if (_disposed) return;
@@ -69,20 +75,15 @@ class HardwareService {
     }
   }
 
-  /// Send text to Pi HDMI display via WebRTC data channel "screen".
-  void updateScreen({String top = '', String mid = '', String bot = ''}) {
-    final payload = jsonEncode({'top': top, 'mid': mid, 'bot': bot});
-    if (_screenChannel?.state == RTCDataChannelState.RTCDataChannelOpen) {
-      _screenChannel!.send(RTCDataChannelMessage(payload));
-      return;
-    }
+  /// No-op: the new Pi server has no DataChannel / screen support.
+  void updateScreen({String top = '', String mid = '', String bot = ''}) {}
 
-    // Fallback for race windows before data channel opens.
-    _socketEmit('update_screen', {'top': top, 'mid': mid, 'bot': bot});
-  }
+  /// No-op: the new Pi server has no TTS relay via socket.
+  void speak(String text) {}
 
-  /// Legacy TTS bridge exposed by hardware server.
-  void speak(String text) => _socketEmit('speak', {'text': text});
+  // ---------------------------------------------------------------------------
+  // Connectivity
+  // ---------------------------------------------------------------------------
 
   bool _hasWifi(List<ConnectivityResult> r) =>
       r.contains(ConnectivityResult.wifi);
@@ -92,18 +93,26 @@ class HardwareService {
     if (_hasWifi(results)) {
       _retryTimer?.cancel();
       _retryTimer = Timer(const Duration(seconds: 1), () {
-        if (!_disposed && !_connecting && _socket?.connected != true) {
+        if (!_disposed && !_connecting && !_isConnected) {
           _retryDelay = const Duration(seconds: 3);
           _tryConnect();
         }
       });
     } else {
-      _cancelSocket();
-      _closeWebRTC();
       _retryTimer?.cancel();
+      _pingTimer?.cancel();
+      _closeWebRTC();
       _setStatus(const HwStatus.disconnected());
     }
   }
+
+  bool get _isConnected =>
+      status.value.status == HwConnectionStatus.connected ||
+      status.value.status == HwConnectionStatus.hardwareReady;
+
+  // ---------------------------------------------------------------------------
+  // Connection lifecycle
+  // ---------------------------------------------------------------------------
 
   Future<void> _tryConnect() async {
     if (_disposed || _connecting) return;
@@ -111,204 +120,149 @@ class HardwareService {
     _setStatus(HwStatus(status: HwConnectionStatus.connecting));
 
     try {
-      _socket?.dispose();
-      _socket = socket_io.io(
-        AppConfig.hwSocketUrl,
-        socket_io.OptionBuilder()
-            .setTransports(['polling', 'websocket'])
-            .disableAutoConnect()
-            .disableReconnection()
-            .setTimeout(4000)
-            .build(),
-      );
-      _setupSocketListeners();
-      _socket!.connect();
+      await _startWebRTC();
     } catch (e) {
-      debugPrint('[HardwareService] socket connect error: $e');
+      debugPrint('[HardwareService] connect error: $e');
       _connecting = false;
+      _closeWebRTC();
       _setStatus(const HwStatus.disconnected());
       _scheduleRetry();
     }
   }
 
-  void _setupSocketListeners() {
-    final socket = _socket!;
-
-    socket.onConnect((_) async {
-      debugPrint('[HardwareService] signalling socket connected');
-      _connecting = false;
-      _retryDelay = const Duration(seconds: 3);
-      _setStatus(HwStatus(status: HwConnectionStatus.connected));
-      _startPingTimer();
-      await _startWebRTC();
-    });
-
-    socket.onDisconnect((_) {
-      debugPrint('[HardwareService] signalling socket disconnected');
-      _connecting = false;
-      _pingTimer?.cancel();
-      _closeWebRTC();
-      _setStatus(const HwStatus.disconnected());
-      if (!_disposed) _scheduleRetry();
-    });
-
-    socket.onError((e) => debugPrint('[HardwareService] socket error: $e'));
-
-    socket.onConnectError((e) {
-      debugPrint('[HardwareService] connect error: $e');
-      _connecting = false;
-      _setStatus(const HwStatus.disconnected());
-      if (!_disposed) _scheduleRetry();
-    });
-
-    socket.on('hw_info', (data) {
-      try {
-        final info = HwInfo.fromJson(Map<String, dynamic>.from(data as Map));
-        _setStatus(HwStatus(
-          status: HwConnectionStatus.hardwareReady,
-          info: info,
-          latencyMs: status.value.latencyMs,
-        ));
-        debugPrint('[HardwareService] hw_info: ${info.device} v${info.version}');
-      } catch (e) {
-        debugPrint('[HardwareService] hw_info parse error: $e');
-      }
-    });
-
-    socket.on('answer', (data) async {
-      try {
-        final map = Map<String, dynamic>.from(data as Map);
-        final desc = RTCSessionDescription(
-          map['sdp'] as String,
-          map['type'] as String,
-        );
-        await _pc?.setRemoteDescription(desc);
-        debugPrint('[HardwareService] Remote description (answer) set');
-      } catch (e) {
-        debugPrint('[HardwareService] setRemoteDescription error: $e');
-      }
-    });
-
-    socket.on('ice_candidate', (data) async {
-      try {
-        final map = Map<String, dynamic>.from(data as Map);
-        final candidate = RTCIceCandidate(
-          map['candidate'] as String,
-          map['sdpMid'] as String?,
-          map['sdpMLineIndex'] as int?,
-        );
-        await _pc?.addCandidate(candidate);
-      } catch (e) {
-        debugPrint('[HardwareService] addCandidate error: $e');
-      }
-    });
-
-    socket.on('hw_error', (data) {
-      debugPrint('[HardwareService] hw_error: $data');
-      _setStatus(HwStatus(
-        status: status.value.status,
-        info: status.value.info,
-        latencyMs: status.value.latencyMs,
-        error: data?.toString(),
-      ));
-    });
-
-    socket.on('pong_hw', (_) {
-      if (_pingTimestamp > 0) {
-        final latency = DateTime.now().millisecondsSinceEpoch - _pingTimestamp;
-        _pingTimestamp = 0;
-        _setStatus(HwStatus(
-          status: status.value.status,
-          info: status.value.info,
-          latencyMs: latency,
-          error: status.value.error,
-        ));
-      }
-    });
-  }
-
+  /// Build peer connection, gather local audio, send SDP offer via HTTP POST,
+  /// apply the SDP answer, then let ICE complete.
   Future<void> _startWebRTC() async {
     if (_disposed) return;
     _closeWebRTC();
 
-    final config = {
+    // ---- Peer connection ----
+    const config = {
       'iceServers': [
         {'urls': 'stun:stun.l.google.com:19302'},
       ],
       'sdpSemantics': 'unified-plan',
+      'bundlePolicy': 'max-bundle',
     };
-
     _pc = await createPeerConnection(config);
 
+    // ---- Local audio (phone mic → Pi speaker) ----
     _localStream = await navigator.mediaDevices.getUserMedia({
-      'audio': true,
+      'audio': {
+        'echoCancellation': true,
+        'noiseSuppression': true,
+        'autoGainControl': true,
+      },
       'video': false,
     });
     for (final track in _localStream!.getAudioTracks()) {
       await _pc!.addTrack(track, _localStream!);
     }
-    debugPrint('[HardwareService] Local audio track added');
 
-    _screenChannel = await _pc!.createDataChannel(
-      'screen',
-      RTCDataChannelInit()
-        ..ordered = true
-        ..maxRetransmits = 3,
+    // ---- Transceivers — we send audio, receive video + audio ----
+    // addTrack above already creates an audio send transceiver.
+    // Add explicit recvonly transceivers for the Pi's video and audio tracks.
+    await _pc!.addTransceiver(
+      kind: RTCRtpMediaType.RTCRtpMediaTypeVideo,
+      init: RTCRtpTransceiverInit(direction: TransceiverDirection.RecvOnly),
     );
-    _screenChannel!.onDataChannelState = (state) {
-      debugPrint('[HardwareService] DataChannel state: $state');
-    };
+    await _pc!.addTransceiver(
+      kind: RTCRtpMediaType.RTCRtpMediaTypeAudio,
+      init: RTCRtpTransceiverInit(direction: TransceiverDirection.RecvOnly),
+    );
 
+    // ---- Track handler ----
     _pc!.onTrack = (RTCTrackEvent event) {
       final track = event.track;
-      debugPrint('[HardwareService] Received remote track: ${track.kind}');
-
+      debugPrint('[HardwareService] remote track: ${track.kind}');
       if (track.kind == 'video' && event.streams.isNotEmpty) {
         remoteVideoRenderer.srcObject = event.streams.first;
-        debugPrint('[HardwareService] Camera stream attached to renderer');
+        debugPrint('[HardwareService] Pi camera attached to renderer');
+        _setStatus(HwStatus(
+          status: HwConnectionStatus.hardwareReady,
+          info: _syntheticHwInfo(),
+          latencyMs: status.value.latencyMs,
+        ));
       }
-      // Remote audio is played by WebRTC platform audio engine.
     };
 
-    _pc!.onIceCandidate = (RTCIceCandidate candidate) {
-      _socketEmit('ice_candidate', {
-        'candidate': candidate.candidate,
-        'sdpMid': candidate.sdpMid,
-        'sdpMLineIndex': candidate.sdpMLineIndex,
-      });
-    };
-
+    // ---- Connection state ----
     _pc!.onConnectionState = (RTCPeerConnectionState state) {
-      debugPrint('[HardwareService] PeerConnection state: $state');
-      if (state == RTCPeerConnectionState.RTCPeerConnectionStateFailed ||
-          state == RTCPeerConnectionState.RTCPeerConnectionStateDisconnected ||
-          state == RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
-        _closeWebRTC();
-        if (!_disposed && _socket?.connected == true) {
-          _scheduleRetry();
+      debugPrint('[HardwareService] PeerConnection: $state');
+      if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
+        _connecting = false;
+        _retryDelay = const Duration(seconds: 3);
+        if (status.value.status != HwConnectionStatus.hardwareReady) {
+          _setStatus(HwStatus(status: HwConnectionStatus.connected));
         }
+        _startPingTimer();
+      } else if (state ==
+              RTCPeerConnectionState.RTCPeerConnectionStateDisconnected ||
+          state == RTCPeerConnectionState.RTCPeerConnectionStateFailed ||
+          state == RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
+        _pingTimer?.cancel();
+        _closeWebRTC();
+        _setStatus(const HwStatus.disconnected());
+        if (!_disposed) _scheduleRetry();
       }
     };
 
-    final offer = await _pc!.createOffer({
-      'offerToReceiveAudio': true,
-      'offerToReceiveVideo': true,
-    });
+    // ---- Create offer ----
+    final offer = await _pc!.createOffer();
     await _pc!.setLocalDescription(offer);
 
-    _socketEmit('offer', {
-      'sdp': offer.sdp,
-      'type': offer.type,
-    });
-    debugPrint('[HardwareService] WebRTC offer sent to Pi');
+    // Wait for ICE gathering to complete so the offer carries all candidates
+    // (aiortc does not support trickle ICE from the HTTP side).
+    await _waitForIceGathering();
+
+    // ---- POST offer to Pi ----
+    debugPrint('[HardwareService] POSTing offer to ${AppConfig.hwOfferUrl}');
+    final response = await http
+        .post(
+          Uri.parse(AppConfig.hwOfferUrl),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'sdp': offer.sdp,
+            'type': offer.type,
+          }),
+        )
+        .timeout(const Duration(seconds: 10));
+
+    if (response.statusCode != 200) {
+      throw StateError('Pi /offer returned ${response.statusCode}');
+    }
+
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+    final answer = RTCSessionDescription(
+      body['sdp'] as String,
+      body['type'] as String,
+    );
+    await _pc!.setRemoteDescription(answer);
+    debugPrint('[HardwareService] SDP answer applied — WebRTC handshake done');
+  }
+
+  /// Poll until ICE gathering is complete (or 8 s timeout).
+  Future<void> _waitForIceGathering() async {
+    if (_pc == null) return;
+    final completer = Completer<void>();
+
+    _pc!.onIceGatheringState = (RTCIceGatheringState state) {
+      if (state == RTCIceGatheringState.RTCIceGatheringStateComplete &&
+          !completer.isCompleted) {
+        completer.complete();
+      }
+    };
+
+    // Fallback: resolve after 8 s even if the callback never fires.
+    await completer.future.timeout(
+      const Duration(seconds: 8),
+      onTimeout: () {
+        debugPrint('[HardwareService] ICE gathering timeout — proceeding');
+      },
+    );
   }
 
   void _closeWebRTC() {
-    try {
-      _screenChannel?.close();
-    } catch (_) {}
-    _screenChannel = null;
-
     _localStream?.getTracks().forEach((t) => t.stop());
     _localStream?.dispose();
     _localStream = null;
@@ -328,6 +282,10 @@ class HardwareService {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Retry / ping
+  // ---------------------------------------------------------------------------
+
   void _scheduleRetry() {
     _retryTimer?.cancel();
     debugPrint('[HardwareService] retry in ${_retryDelay.inSeconds}s');
@@ -340,59 +298,59 @@ class HardwareService {
     _retryDelay = next > _maxRetryDelay ? _maxRetryDelay : next;
   }
 
+  /// Lightweight HTTP GET to the Pi root page to measure round-trip latency.
   void _startPingTimer() {
     _pingTimer?.cancel();
-    _pingTimer = Timer.periodic(AppConfig.hwPingInterval, (_) {
-      if (_socket?.connected == true) {
-        _pingTimestamp = DateTime.now().millisecondsSinceEpoch;
-        _socketEmit('ping_hw', {});
+    _pingTimer = Timer.periodic(AppConfig.hwPingInterval, (_) async {
+      if (_disposed || !_isConnected) return;
+      final t0 = DateTime.now().millisecondsSinceEpoch;
+      try {
+        await http
+            .get(Uri.parse(AppConfig.hwBaseUrl))
+            .timeout(const Duration(seconds: 3));
+        final latency = DateTime.now().millisecondsSinceEpoch - t0;
+        _setStatus(HwStatus(
+          status: status.value.status,
+          info: status.value.info,
+          latencyMs: latency,
+          error: status.value.error,
+        ));
+      } catch (_) {
+        // If ping fails, the peer connection state handler will catch the drop.
       }
     });
   }
 
-  void _cancelSocket() {
-    _pingTimer?.cancel();
-    _socket?.dispose();
-    _socket = null;
-    _connecting = false;
-  }
+  // ---------------------------------------------------------------------------
+  // Helpers
+  // ---------------------------------------------------------------------------
+
+  HwInfo _syntheticHwInfo() => const HwInfo(
+        device: 'VAANI-HW',
+        version: '2.0',
+        ip: '',
+        camera: '/dev/video0',
+        cameraOk: true,
+        micOk: true,
+        speakerOk: false,
+      );
 
   void _setStatus(HwStatus s) {
     if (!_disposed) status.value = s;
   }
 
-  void _socketEmit(String event, dynamic data) {
-    if (_socket?.connected == true) {
-      _socket!.emit(event, data);
-    }
-  }
-
   // ---------------------------------------------------------------------------
-  // Compatibility shims (legacy API preserved, intentionally no-op for media)
+  // Legacy shims (API-compatible, no-op)
   // ---------------------------------------------------------------------------
 
-  void startMic() {
-    // Media is negotiated via WebRTC. Kept for backward compatibility.
-    _socketEmit('start_mic', {});
-  }
+  void startMic() {}
+  void stopMic() {}
+  void startStream() {}
+  void stopStream() {}
 
-  void stopMic() {
-    // Media is negotiated via WebRTC. Kept for backward compatibility.
-    _socketEmit('stop_mic', {});
-  }
-
-  void startStream() {
-    // Pi server handles media via WebRTC tracks; this event is legacy no-op.
-    _socketEmit('start_stream', {
-      'fps': AppConfig.hwStreamFps,
-      'quality': AppConfig.hwStreamQuality,
-    });
-  }
-
-  void stopStream() {
-    // Legacy no-op / remote-side compatibility event.
-    _socketEmit('stop_stream', {});
-  }
+  // ---------------------------------------------------------------------------
+  // Dispose
+  // ---------------------------------------------------------------------------
 
   void dispose() {
     _disposed = true;
@@ -400,7 +358,6 @@ class HardwareService {
     _pingTimer?.cancel();
     _connectivitySub?.cancel();
     _closeWebRTC();
-    _cancelSocket();
     remoteVideoRenderer.dispose();
     status.dispose();
   }
