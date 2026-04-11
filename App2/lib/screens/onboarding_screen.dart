@@ -9,9 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../config/app_config.dart';
 import '../providers/webrtc_provider.dart';
 import '../screens/caller_home_screen.dart';
-import '../screens/detection_screen.dart';
-import '../screens/model_download_screen.dart';
-import '../services/t5_model_downloader.dart';
+import '../screens/emergency_contacts_onboarding_screen.dart';
 
 // ── Data ──────────────────────────────────────────────────────────────────────
 
@@ -209,18 +207,17 @@ class _OnboardingScreenState extends State<OnboardingScreen>
     final country  = _country ?? 'Other';
     final language = _language ?? 'english';
 
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('user_role',           role);
-    await prefs.setBool('onboarding_done',        true);
-    await prefs.setString('webrtc_username',      username);
-    await prefs.setString('user_country',         country);
-    await prefs.setString('country',              country);
-    await prefs.setString('preferred_language',   language);
-
     if (!mounted) return;
-    context.read<WebRtcProvider>().connectWithRole(username, role);
-
     if (role == 'caller') {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('user_role', role);
+      await prefs.setBool('onboarding_done', true);
+      await prefs.setString('webrtc_username', username);
+      await prefs.setString('user_country', country);
+      await prefs.setString('country', country);
+      await prefs.setString('preferred_language', language);
+      if (!mounted) return;
+      context.read<WebRtcProvider>().connectWithRole(username, role);
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(builder: (_) => const CallerHomeScreen()),
@@ -228,13 +225,15 @@ class _OnboardingScreenState extends State<OnboardingScreen>
       return;
     }
 
-    final modelsReady = await T5ModelDownloader().allModelsDownloaded();
-    if (!mounted) return;
     Navigator.pushReplacement(
       context,
       MaterialPageRoute(
-        builder: (_) =>
-            modelsReady ? const DetectionScreen() : const ModelDownloadScreen(),
+        builder: (_) => EmergencyContactsOnboardingScreen(
+          role: role,
+          username: username,
+          country: country,
+          language: language,
+        ),
       ),
     );
   }

@@ -81,7 +81,7 @@ class DetectionProvider extends ChangeNotifier {
 
   HardwareService? _hardwareService;
 
-  void Function(String sentence)? onSentenceForCall;
+  final Set<void Function(String sentence)> _sentenceForCallListeners = {};
 
   bool _callModeActive = false;
   bool _watchModeActive = false;
@@ -133,6 +133,24 @@ class DetectionProvider extends ChangeNotifier {
   bool get isProcessingSpeech => _isProcessingSpeech;
   SpeechListenStatus get speechListenStatus => _speechListenStatus;
   bool get speechServiceReady => _speechServiceReady;
+
+  void addSentenceForCallListener(void Function(String sentence) listener) {
+    _sentenceForCallListeners.add(listener);
+  }
+
+  void removeSentenceForCallListener(void Function(String sentence) listener) {
+    _sentenceForCallListeners.remove(listener);
+  }
+
+  void _emitSentenceForCall(String sentence) {
+    if (sentence.trim().isEmpty) return;
+    final listeners = List<void Function(String sentence)>.from(
+      _sentenceForCallListeners,
+    );
+    for (final listener in listeners) {
+      listener(sentence);
+    }
+  }
 
   // ── Initialize ──────────────────────────────────────────────────────────────
 
@@ -403,7 +421,7 @@ class DetectionProvider extends ChangeNotifier {
 
         if (finalText.isNotEmpty) {
           if (_callModeActive) {
-            onSentenceForCall?.call(finalText);
+            _emitSentenceForCall(finalText);
           } else {
             unawaited(_speakImmediately(finalText));
           }
@@ -427,7 +445,7 @@ class DetectionProvider extends ChangeNotifier {
 
     if (instantText.trim().isNotEmpty) {
       if (_callModeActive) {
-        onSentenceForCall?.call(instantText);
+        _emitSentenceForCall(instantText);
       } else {
         unawaited(_speakImmediately(instantText));
       }

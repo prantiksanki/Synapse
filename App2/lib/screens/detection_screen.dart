@@ -10,6 +10,7 @@ import '../providers/call_bridge_provider.dart';
 import '../providers/detection_provider.dart';
 import '../providers/webrtc_provider.dart';
 import '../screens/deaf_call_screen.dart';
+import '../screens/emergency_screen.dart';
 import '../screens/shop_screen.dart';
 import '../screens/incoming_call_screen.dart';
 import '../screens/settings_screen.dart';
@@ -255,6 +256,12 @@ class _DetectionScreenState extends State<DetectionScreen>
     if (tab == NavTab.call) {
       Navigator.of(context)
           .push(MaterialPageRoute(builder: (_) => const DeafCallScreen()))
+          .whenComplete(() {
+        if (mounted) setState(() => _currentTab = NavTab.home);
+      });
+    } else if (tab == NavTab.emergency) {
+      Navigator.of(context)
+          .push(MaterialPageRoute(builder: (_) => const EmergencyScreen()))
           .whenComplete(() {
         if (mounted) setState(() => _currentTab = NavTab.home);
       });
@@ -571,7 +578,7 @@ class _DetectionScreenState extends State<DetectionScreen>
             ),
             TourStep(
               targetKey: _tourNavBarKey,
-              message: "Use the bottom navbar to navigate.\nCall, Watch, Tutorial, and Settings are all here.",
+              message: "Use the bottom navbar to navigate.\nCall, Emergency, Tutorial, Shop, and Settings are all here.",
               spotPadding: 6,
             ),
             TourStep(

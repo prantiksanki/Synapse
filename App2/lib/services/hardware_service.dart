@@ -10,15 +10,10 @@ import '../config/app_config.dart';
 import '../models/connection_state.dart';
 import '../models/hw_info.dart';
 
-/// SYNAPSE Hardware Service — aligned with the aiohttp + aiortc Pi server.
+/// SYNAPSE Hardware Service — receive-only WebRTC client.
 ///
-/// Signalling: single HTTP POST /offer (SDP offer → SDP answer, no Socket.IO).
-/// Media (WebRTC):
-///   Pi → App : camera video (v4l2) + mic audio (PyAudio)
-///   App → Pi : phone mic audio
-///
-/// No DataChannel in the new server — updateScreen / speak are retained as
-/// no-ops so callers compile without change.
+/// Pi → App : camera video + mic audio
+/// App → Pi : NOTHING (one-way stream)
 class HardwareService {
   static HardwareService? _instance;
 
@@ -40,13 +35,15 @@ class HardwareService {
   StreamSubscription<List<ConnectivityResult>>? _connectivitySub;
 
   RTCPeerConnection? _pc;
-  MediaStream? _localStream;
 
-  /// Pi camera + mic renderer target for WebRTC UI screens.
+  /// Single MediaStream that holds BOTH the video and audio tracks from Pi.
+  /// Critical: must be one stream so the <video> element plays audio too.
+  MediaStream? _remoteStream;
+
   final RTCVideoRenderer remoteVideoRenderer = RTCVideoRenderer();
   bool _rendererInitialized = false;
 
-  /// Legacy frame / audio callbacks — kept for API compatibility, never called.
+  /// Legacy callbacks — never called, kept for API compatibility.
   void Function(Uint8List jpeg)? onFrame;
   void Function(Uint8List pcm)? onAudio;
 
@@ -75,10 +72,7 @@ class HardwareService {
     }
   }
 
-  /// No-op: the new Pi server has no DataChannel / screen support.
   void updateScreen({String top = '', String mid = '', String bot = ''}) {}
-
-  /// No-op: the new Pi server has no TTS relay via socket.
   void speak(String text) {}
 
   // ---------------------------------------------------------------------------
@@ -130,38 +124,23 @@ class HardwareService {
     }
   }
 
-  /// Build peer connection, gather local audio, send SDP offer via HTTP POST,
-  /// apply the SDP answer, then let ICE complete.
   Future<void> _startWebRTC() async {
     if (_disposed) return;
     _closeWebRTC();
 
     // ---- Peer connection ----
     const config = {
-      'iceServers': [
-        {'urls': 'stun:stun.l.google.com:19302'},
-      ],
+      'iceServers': <Map<String, dynamic>>[],
       'sdpSemantics': 'unified-plan',
       'bundlePolicy': 'max-bundle',
     };
     _pc = await createPeerConnection(config);
 
-    // ---- Local audio (phone mic → Pi speaker) ----
-    _localStream = await navigator.mediaDevices.getUserMedia({
-      'audio': {
-        'echoCancellation': true,
-        'noiseSuppression': true,
-        'autoGainControl': true,
-      },
-      'video': false,
-    });
-    for (final track in _localStream!.getAudioTracks()) {
-      await _pc!.addTrack(track, _localStream!);
-    }
+    // ---- Single MediaStream to hold remote tracks ----
+    _remoteStream = await createLocalMediaStream('remote_pi_stream');
+    remoteVideoRenderer.srcObject = _remoteStream;
 
-    // ---- Transceivers — we send audio, receive video + audio ----
-    // addTrack above already creates an audio send transceiver.
-    // Add explicit recvonly transceivers for the Pi's video and audio tracks.
+    // ---- Receive-only transceivers (no phone mic upload) ----
     await _pc!.addTransceiver(
       kind: RTCRtpMediaType.RTCRtpMediaTypeVideo,
       init: RTCRtpTransceiverInit(direction: TransceiverDirection.RecvOnly),
@@ -171,22 +150,30 @@ class HardwareService {
       init: RTCRtpTransceiverInit(direction: TransceiverDirection.RecvOnly),
     );
 
-    // ---- Track handler ----
+    // ---- Track handler — add ALL tracks (video + audio) to the same stream ----
     _pc!.onTrack = (RTCTrackEvent event) {
       final track = event.track;
       debugPrint('[HardwareService] remote track: ${track.kind}');
-      if (track.kind == 'video' && event.streams.isNotEmpty) {
-        remoteVideoRenderer.srcObject = event.streams.first;
-        debugPrint('[HardwareService] Pi camera attached to renderer');
+
+      _remoteStream?.addTrack(track);
+
+      if (track.kind == 'video') {
+        // Re-assign srcObject so renderer picks up the new track
+        remoteVideoRenderer.srcObject = _remoteStream;
+        debugPrint('[HardwareService] Pi camera attached');
         _setStatus(HwStatus(
           status: HwConnectionStatus.hardwareReady,
           info: _syntheticHwInfo(),
           latencyMs: status.value.latencyMs,
         ));
+      } else if (track.kind == 'audio') {
+        // Force-enable so phone speaker plays it
+        track.enabled = true;
+        debugPrint('[HardwareService] Pi mic attached');
       }
     };
 
-    // ---- Connection state ----
+    // ---- Connection state handling ----
     _pc!.onConnectionState = (RTCPeerConnectionState state) {
       debugPrint('[HardwareService] PeerConnection: $state');
       if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
@@ -207,24 +194,18 @@ class HardwareService {
       }
     };
 
-    // ---- Create offer ----
+    // ---- Create + send offer ----
     final offer = await _pc!.createOffer();
     await _pc!.setLocalDescription(offer);
 
-    // Wait for ICE gathering to complete so the offer carries all candidates
-    // (aiortc does not support trickle ICE from the HTTP side).
     await _waitForIceGathering();
 
-    // ---- POST offer to Pi ----
     debugPrint('[HardwareService] POSTing offer to ${AppConfig.hwOfferUrl}');
     final response = await http
         .post(
           Uri.parse(AppConfig.hwOfferUrl),
           headers: {'Content-Type': 'application/json'},
-          body: jsonEncode({
-            'sdp': offer.sdp,
-            'type': offer.type,
-          }),
+          body: jsonEncode({'sdp': offer.sdp, 'type': offer.type}),
         )
         .timeout(const Duration(seconds: 10));
 
@@ -238,10 +219,9 @@ class HardwareService {
       body['type'] as String,
     );
     await _pc!.setRemoteDescription(answer);
-    debugPrint('[HardwareService] SDP answer applied — WebRTC handshake done');
+    debugPrint('[HardwareService] SDP answer applied');
   }
 
-  /// Poll until ICE gathering is complete (or 8 s timeout).
   Future<void> _waitForIceGathering() async {
     if (_pc == null) return;
     final completer = Completer<void>();
@@ -253,7 +233,6 @@ class HardwareService {
       }
     };
 
-    // Fallback: resolve after 8 s even if the callback never fires.
     await completer.future.timeout(
       const Duration(seconds: 8),
       onTimeout: () {
@@ -263,9 +242,11 @@ class HardwareService {
   }
 
   void _closeWebRTC() {
-    _localStream?.getTracks().forEach((t) => t.stop());
-    _localStream?.dispose();
-    _localStream = null;
+    try {
+      _remoteStream?.getTracks().forEach((t) => t.stop());
+      _remoteStream?.dispose();
+    } catch (_) {}
+    _remoteStream = null;
 
     try {
       _pc?.close();
@@ -298,7 +279,6 @@ class HardwareService {
     _retryDelay = next > _maxRetryDelay ? _maxRetryDelay : next;
   }
 
-  /// Lightweight HTTP GET to the Pi root page to measure round-trip latency.
   void _startPingTimer() {
     _pingTimer?.cancel();
     _pingTimer = Timer.periodic(AppConfig.hwPingInterval, (_) async {
@@ -315,9 +295,7 @@ class HardwareService {
           latencyMs: latency,
           error: status.value.error,
         ));
-      } catch (_) {
-        // If ping fails, the peer connection state handler will catch the drop.
-      }
+      } catch (_) {}
     });
   }
 
@@ -339,18 +317,11 @@ class HardwareService {
     if (!_disposed) status.value = s;
   }
 
-  // ---------------------------------------------------------------------------
-  // Legacy shims (API-compatible, no-op)
-  // ---------------------------------------------------------------------------
-
+  // Legacy shims
   void startMic() {}
   void stopMic() {}
   void startStream() {}
   void stopStream() {}
-
-  // ---------------------------------------------------------------------------
-  // Dispose
-  // ---------------------------------------------------------------------------
 
   void dispose() {
     _disposed = true;

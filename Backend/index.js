@@ -164,6 +164,12 @@ io.on('connection', (socket) => {
     if (target) io.to(target).emit('ice_candidate', { callId, candidate });
   });
 
+  socket.on('sign_panel_item', ({ callId, gifPath, label }) => {
+    const target = _getOtherSocket(callId, socket.id);
+    if (!target || !gifPath || !label) return;
+    io.to(target).emit('sign_panel_item', { gifPath, label });
+  });
+
   // ── SIGN SPEECH RELAY (deaf → caller TTS) ─────────────────────────────────
   // Deaf user sends signed sentence text; server forwards it to the other
   // participant in the same call so their device plays TTS locally.

@@ -89,7 +89,7 @@ class _WebRtcCallScreenState extends State<WebRtcCallScreen>
       _overlaySign = item;
       _signOverlayVisible = true;
     });
-    _signOverlayTimer = Timer(const Duration(milliseconds: 3500), () {
+    _signOverlayTimer = Timer(const Duration(seconds: 2), () {
       if (mounted) setState(() => _signOverlayVisible = false);
     });
   }

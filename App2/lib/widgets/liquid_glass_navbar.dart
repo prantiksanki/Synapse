@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-enum NavTab { home, call, tutorial, shop, settings }
+enum NavTab { home, call, emergency, tutorial, shop, settings }
 
 class LiquidGlassNavBar extends StatefulWidget {
   final NavTab currentTab;
@@ -24,6 +24,7 @@ class _LiquidGlassNavBarState extends State<LiquidGlassNavBar>
   static const _tabs = [
     (tab: NavTab.home,     icon: Icons.home_rounded,                 color: Color(0xFFE8433A)),
     (tab: NavTab.call,     icon: Icons.phone_rounded,                color: Color(0xFF4CAF82)),
+    (tab: NavTab.emergency, icon: Icons.warning_rounded,             color: Color(0xFFDC2626)),
     (tab: NavTab.tutorial, icon: Icons.play_lesson_rounded,          color: Color(0xFFB5651D)),
     (tab: NavTab.shop,     icon: Icons.shopping_bag_rounded,         color: Color(0xFFD63384)),
     (tab: NavTab.settings, icon: Icons.settings_rounded,             color: Color(0xFF9E9E9E)),

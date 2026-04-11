@@ -47,9 +47,9 @@ class CallBridgeProvider extends ChangeNotifier {
 
   void attach(DetectionProvider detection) {
     if (_detection == detection) return;
-    _detection?.onSentenceForCall = null;
+    _detection?.removeSentenceForCallListener(_onSentenceForCall);
     _detection = detection;
-    detection.onSentenceForCall = _onSentenceForCall;
+    detection.addSentenceForCallListener(_onSentenceForCall);
   }
 
   // ── Call state ────────────────────────────────────────────────────────────
@@ -152,7 +152,7 @@ class CallBridgeProvider extends ChangeNotifier {
 
   @override
   void dispose() {
-    _detection?.onSentenceForCall = null;
+    _detection?.removeSentenceForCallListener(_onSentenceForCall);
     _bridge.dispose();
     _callerStt.stopListening();
     _callerStt.dispose();

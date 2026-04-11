@@ -7,7 +7,6 @@ import 'package:synapse/services/tutorial_repository.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
-
   test('builds curriculum from asset manifest and sign image manifest', () async {
     final repo = TutorialRepository(
       random: Random(7),
@@ -93,6 +92,8 @@ void main() {
     expect(loaded.xp, original.xp);
   });
 }
+
+
 
 _fakeLesson(String id, String answer) => TutorialLesson(
       id: id,

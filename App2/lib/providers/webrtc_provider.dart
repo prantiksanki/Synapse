@@ -4,7 +4,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'detection_provider.dart';
 import '../services/speech_service.dart';
+import '../services/tts_service.dart';
 import '../services/webrtc_service.dart';
 
 enum WebRtcCallStatus { idle, ringing, active, ended }
@@ -17,22 +19,13 @@ class ReceivedSignItem {
 }
 
 /// Orchestrates WebRTC calls for both deaf and caller roles.
-///
-/// Performance design:
-/// - [callDurationNotifier] is a ValueNotifier updated every second.
-///   The call screen uses ValueListenableBuilder for the timer so only that
-///   widget rebuilds — NOT the entire provider tree (no notifyListeners).
-/// - [transcriptNotifier] is a ValueNotifier updated on every STT partial.
-///   Only the transcript text widget rebuilds; the video renderer is untouched.
-/// - [receivedSignNotifier] is a ValueNotifier updated when a sign panel item
-///   arrives from the remote participant; the overlay widget subscribes to it.
-/// - notifyListeners() is called only for genuine call-state transitions
-///   (ringing → active → ended, mute/speaker toggles, user list changes).
 class WebRtcProvider extends ChangeNotifier {
   final DeafWebRtcService _service = DeafWebRtcService();
   final SpeechService _remoteStt = SpeechService();
+  final TtsService _ttsService = TtsService();
 
   WebRtcCallStatus _status = WebRtcCallStatus.idle;
+  DetectionProvider? _detection;
   String? _callerUsername;
   String? _pendingCallId;
   String _pendingCallType = 'audio';
@@ -45,8 +38,8 @@ class WebRtcProvider extends ChangeNotifier {
   bool _isVideoEnabled = true;
   Timer? _callTimer;
   bool _startingRemoteStt = false;
+  bool _relayingSignSentence = false;
 
-  // ── Zero-rebuild notifiers ─────────────────────────────────────────────────
   /// Updated every second without calling notifyListeners().
   final ValueNotifier<Duration> callDurationNotifier =
       ValueNotifier(Duration.zero);
@@ -58,11 +51,9 @@ class WebRtcProvider extends ChangeNotifier {
   final ValueNotifier<ReceivedSignItem?> receivedSignNotifier =
       ValueNotifier(null);
 
-  // ── Renderers ──────────────────────────────────────────────────────────────
   final RTCVideoRenderer localRenderer = RTCVideoRenderer();
   final RTCVideoRenderer remoteRenderer = RTCVideoRenderer();
 
-  // ── Getters ────────────────────────────────────────────────────────────────
   WebRtcCallStatus get status => _status;
   String? get callerUsername => _callerUsername;
   bool get isCallActive => _status == WebRtcCallStatus.active;
@@ -71,15 +62,11 @@ class WebRtcProvider extends ChangeNotifier {
   bool get isAudioCall => _currentCallType != 'video';
   String get userRole => _userRole;
   String get myUsername => _myUsername;
-
   bool get isMuted => _isMuted;
   bool get isSpeakerOn => _isSpeakerOn;
   bool get isVideoEnabled => _isVideoEnabled;
-
   String get remoteTranscript => transcriptNotifier.value;
-
   bool get isRemoteListening => _remoteStt.isListening;
-
   List<Map<String, dynamic>> get onlineUsers => _service.onlineUsers;
   bool get isConnected => _service.isConnected;
 
@@ -114,15 +101,17 @@ class WebRtcProvider extends ChangeNotifier {
       _isVideoEnabled = _service.isVideoEnabled;
       callDurationNotifier.value = Duration.zero;
       _startCallTimer();
+      _syncDetectionCallMode();
       unawaited(_startRemoteStt());
-      notifyListeners(); // one notify: state → active
+      notifyListeners();
     };
 
     _service.onCallEnded = () {
       _status = WebRtcCallStatus.ended;
+      _exitDetectionCallMode();
       unawaited(_stopRemoteStt());
       _stopCallTimer();
-      notifyListeners(); // one notify: state → ended
+      notifyListeners();
       Future.delayed(const Duration(seconds: 2), _resetAfterCall);
     };
 
@@ -141,7 +130,53 @@ class WebRtcProvider extends ChangeNotifier {
     };
   }
 
-  // ── Call timer — ValueNotifier, no notifyListeners() ──────────────────────
+  void attachDetection(DetectionProvider detection) {
+    if (_detection == detection) return;
+    _detection?.removeSentenceForCallListener(_onSentenceForCall);
+    _detection = detection;
+    detection.addSentenceForCallListener(_onSentenceForCall);
+    _syncDetectionCallMode();
+  }
+
+  void _syncDetectionCallMode() {
+    final detection = _detection;
+    if (detection == null) return;
+    if (_userRole != 'deaf' || _status != WebRtcCallStatus.active) {
+      detection.exitCallMode();
+      return;
+    }
+    if (_currentCallType == 'video') {
+      detection.enterCallModeVideoOnly();
+    } else {
+      detection.enterCallMode();
+    }
+  }
+
+  void _exitDetectionCallMode() {
+    if (_userRole == 'deaf') {
+      _detection?.exitCallMode();
+    }
+  }
+
+  void _onSentenceForCall(String sentence) {
+    if (_userRole != 'deaf') return;
+    if (_status != WebRtcCallStatus.active) return;
+    if (_relayingSignSentence) return;
+    unawaited(_relaySentenceToCall(sentence));
+  }
+
+  Future<void> _relaySentenceToCall(String sentence) async {
+    if (sentence.trim().isEmpty) return;
+    _relayingSignSentence = true;
+    try {
+      await _ttsService.speakForCall(sentence);
+    } catch (_) {
+      // Keep the call active even if in-call TTS fails.
+    } finally {
+      _relayingSignSentence = false;
+    }
+  }
+
   void _startCallTimer() {
     _callTimer?.cancel();
     _callTimer = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -162,7 +197,6 @@ class WebRtcProvider extends ChangeNotifier {
     return '$mm:$ss';
   }
 
-  // ── Remote STT — transcript goes to ValueNotifier only ────────────────────
   Future<void> _startRemoteStt() async {
     if (_status != WebRtcCallStatus.active) return;
     if (_remoteStt.isListening || _startingRemoteStt) return;
@@ -174,7 +208,6 @@ class WebRtcProvider extends ChangeNotifier {
       if (!ready) return;
 
       _remoteStt.onResult = (text, isFinal) {
-        // Update ValueNotifier only — NO notifyListeners(), NO video rebuild.
         transcriptNotifier.value = text;
       };
 
@@ -201,8 +234,6 @@ class WebRtcProvider extends ChangeNotifier {
     await _remoteStt.stopListening();
   }
 
-  // ── Public API ─────────────────────────────────────────────────────────────
-
   Future<void> connectFromPrefs() async {
     final prefs = await SharedPreferences.getInstance();
     final username = prefs.getString('webrtc_username') ?? '';
@@ -210,12 +241,14 @@ class WebRtcProvider extends ChangeNotifier {
     _userRole = role;
     _myUsername = username;
     if (username.isNotEmpty) _service.connect(username, role);
+    _syncDetectionCallMode();
   }
 
   void connectWithRole(String username, String role) {
     _userRole = role;
     _myUsername = username;
     _service.connect(username, role);
+    _syncDetectionCallMode();
   }
 
   void connect(String username) {
@@ -224,6 +257,7 @@ class WebRtcProvider extends ChangeNotifier {
       _userRole = role;
       _myUsername = username;
       _service.connect(username, role);
+      _syncDetectionCallMode();
     });
   }
 
@@ -247,11 +281,13 @@ class WebRtcProvider extends ChangeNotifier {
     _pendingCallId = null;
     _status = WebRtcCallStatus.idle;
     _callerUsername = null;
+    _exitDetectionCallMode();
     notifyListeners();
   }
 
   void endCall() {
     _service.endCall();
+    _exitDetectionCallMode();
     unawaited(_stopRemoteStt());
     _stopCallTimer();
     _resetAfterCall();
@@ -282,6 +318,7 @@ class WebRtcProvider extends ChangeNotifier {
   }
 
   void _resetAfterCall() {
+    _exitDetectionCallMode();
     _status = WebRtcCallStatus.idle;
     _callerUsername = null;
     _pendingCallId = null;
@@ -299,6 +336,7 @@ class WebRtcProvider extends ChangeNotifier {
   @override
   void dispose() {
     _callTimer?.cancel();
+    _detection?.removeSentenceForCallListener(_onSentenceForCall);
     callDurationNotifier.dispose();
     transcriptNotifier.dispose();
     receivedSignNotifier.dispose();
