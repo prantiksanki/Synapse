@@ -1,12 +1,9 @@
 # SYNAPSE / VAANI
 
-<p align="center">
-  <video src="./Vaani_Normal_Side.mp4" controls width="720"></video>
-</p>
+## Demo Video
 
-<p align="center">
-  <video src="./Vaani_Disable_Side.mp4" controls width="720"></video>
-</p>
+- [Watch Demo: Normal Side](./Vaani_Normal_Side.mp4)
+- [Watch Demo: Disable Side](./Vaani_Disable_Side.mp4)
 
 SYNAPSE, branded in the app as VAANI, is an assistive communication system focused on deaf and hard-of-hearing users. It combines on-device sign detection, sentence generation, WebRTC-based calling, watch/overlay support, emergency workflows, and supporting ML and hardware experiments in one repository.
 
