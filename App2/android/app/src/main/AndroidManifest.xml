@@ -24,6 +24,9 @@
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30"/>
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
 
+    <!-- Emergency SOS: send SMS directly without opening messaging app -->
+    <uses-permission android:name="android.permission.SEND_SMS"/>
+
     <!-- Prevent Android/MIUI from killing the call foreground service -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
 

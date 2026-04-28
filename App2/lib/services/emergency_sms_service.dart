@@ -1,4 +1,6 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../models/emergency_contact.dart';
@@ -11,6 +13,8 @@ enum EmergencySmsResult {
 }
 
 class EmergencySmsService {
+  static const _smsChannel = MethodChannel('synapse/sms');
+
   Future<EmergencySmsResult> sendEmergencyAlert({
     required String userName,
     required List<EmergencyContact> contacts,
@@ -25,15 +29,49 @@ class EmergencySmsService {
     }
 
     final message = _buildEmergencyMessage(userName);
-    final openedSmsApp = await _openSmsApp(
-      numbers: numbers,
-      message: message,
-    );
-    if (openedSmsApp) {
-      return EmergencySmsResult.openedSmsAppFallback;
+
+    // Request SEND_SMS permission
+    final status = await Permission.sms.request();
+
+    if (status.isGranted) {
+      return await _sendDirectly(numbers: numbers, message: message);
     }
-    debugPrint('[EmergencySmsService] Unable to open SMS app for emergency.');
-    return EmergencySmsResult.failed;
+
+    if (status.isPermanentlyDenied) {
+      return EmergencySmsResult.permissionDenied;
+    }
+
+    // Permission denied — fall back to opening SMS app
+    debugPrint('[EmergencySmsService] SMS permission denied, falling back to SMS app.');
+    final opened = await _openSmsApp(numbers: numbers, message: message);
+    return opened ? EmergencySmsResult.openedSmsAppFallback : EmergencySmsResult.failed;
+  }
+
+  Future<EmergencySmsResult> _sendDirectly({
+    required List<String> numbers,
+    required String message,
+  }) async {
+    bool anyFailed = false;
+    for (final number in numbers) {
+      try {
+        await _smsChannel.invokeMethod<bool>('sendSms', {
+          'number': number,
+          'message': message,
+        });
+        debugPrint('[EmergencySmsService] SMS sent to $number');
+      } catch (e) {
+        debugPrint('[EmergencySmsService] Failed to send to $number: $e');
+        anyFailed = true;
+      }
+    }
+
+    if (anyFailed && numbers.length == 1) {
+      // Single contact and it failed — fall back to SMS app
+      final opened = await _openSmsApp(numbers: numbers, message: message);
+      return opened ? EmergencySmsResult.openedSmsAppFallback : EmergencySmsResult.failed;
+    }
+
+    return EmergencySmsResult.sentDirectly;
   }
 
   String _buildEmergencyMessage(String userName) {

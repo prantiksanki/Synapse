@@ -7,6 +7,7 @@ import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import android.telephony.SmsManager
 import android.telephony.TelephonyManager
 import android.view.WindowManager
 import io.flutter.embedding.android.FlutterActivity
@@ -26,12 +27,13 @@ class MainActivity : FlutterActivity() {
     }
 
     // ── Channel names ────────────────────────────────────────────────────────
-    private val ttsChannelName     = "synapse/llm"
-    private val callControlChannel = "synapse/call_control"
-    private val callEventsChannel  = "synapse/call_events"
-    private val audioUtilsChannel  = "synapse/audio_utils"
+    private val ttsChannelName      = "synapse/llm"
+    private val callControlChannel  = "synapse/call_control"
+    private val callEventsChannel   = "synapse/call_events"
+    private val audioUtilsChannel   = "synapse/audio_utils"
     private val watchControlChannel = "synapse/watch_control"
     private val watchEventsChannel  = "synapse/watch_events"
+    private val smsChannel          = "synapse/sms"
 
     // TTS service (existing, unchanged)
     private lateinit var ttsService: SynapseTtsService
@@ -151,6 +153,40 @@ class MainActivity : FlutterActivity() {
                         }
                         startService(intent)
                         result.success(null)
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+
+        // ── SMS channel — send SMS directly via SmsManager ──────────────────
+        MethodChannel(messenger, smsChannel)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "sendSms" -> {
+                        val number  = call.argument<String>("number") ?: ""
+                        val message = call.argument<String>("message") ?: ""
+                        if (number.isBlank() || message.isBlank()) {
+                            result.error("INVALID_ARGS", "number and message are required", null)
+                            return@setMethodCallHandler
+                        }
+                        try {
+                            val smsManager = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                                getSystemService(SmsManager::class.java)
+                            } else {
+                                @Suppress("DEPRECATION")
+                                SmsManager.getDefault()
+                            }
+                            val parts = smsManager.divideMessage(message)
+                            if (parts.size == 1) {
+                                smsManager.sendTextMessage(number, null, message, null, null)
+                            } else {
+                                smsManager.sendMultipartTextMessage(number, null, parts, null, null)
+                            }
+                            result.success(true)
+                        } catch (e: Exception) {
+                            android.util.Log.e("SYNAPSE", "sendSms failed: ${e.message}")
+                            result.error("SMS_FAILED", e.message, null)
+                        }
                     }
                     else -> result.notImplemented()
                 }
